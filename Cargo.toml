@@ -1,0 +1,8 @@
+[package]
+name = "flume"
+version = "0.1.0"
+edition = "2018"
+
+[dependencies]
+async-std = "1.10.0"
+tide = "0.16.0"
