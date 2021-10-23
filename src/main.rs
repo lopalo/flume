@@ -1,14 +1,14 @@
-use async_std::task;
-use std::io::Result as IoResult;
+mod http_api;
+mod queue;
 
-async fn start_http() -> IoResult<()> {
-    tide::log::start();
-    let mut app = tide::new();
-    app.at("/").get(|_| async { Ok("This is Flume") });
-    app.listen("127.0.0.1:8080").await?;
-    Ok(())
+use crate::http_api::start_http;
+use async_std::{io::Result as IoResult, task};
+
+async fn setup() -> IoResult<()> {
+    start_http().await
 }
 
 fn main() -> IoResult<()> {
-    task::block_on(start_http())
+    let server = setup();
+    task::block_on(server)
 }
