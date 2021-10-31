@@ -8,12 +8,14 @@ type Queues = RwLock<PatriciaMap<Mutex<VecDeque<Message>>>>;
 
 #[derive(Clone)]
 pub struct QueueHub {
+    max_queue_size: usize,
     queues: Arc<Queues>,
 }
 
 impl QueueHub {
-    pub fn new() -> Self {
+    pub fn new(max_queue_size: usize) -> Self {
         Self {
+            max_queue_size,
             queues: Arc::new(RwLock::new(PatriciaMap::new())),
         }
     }
@@ -62,8 +64,13 @@ impl QueueHub {
         let qs = self.queues.read().await;
         match qs.get(queue_name) {
             Some(q) => {
-                q.lock().await.push_back(message);
-                Done
+                let mut q = q.lock().await;
+                if q.len() < self.max_queue_size {
+                    q.push_back(message);
+                    Done
+                } else {
+                    QueueIsFull
+                }
             }
             None => QueueDoesNotExist,
         }
@@ -117,6 +124,7 @@ pub enum ResetQueueResult {
 pub enum PushMessageResult {
     Done,
     QueueDoesNotExist,
+    QueueIsFull,
 }
 
 pub enum TakeMessageResult {

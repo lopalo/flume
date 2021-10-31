@@ -12,21 +12,35 @@ struct PushMessage {
     payload: String,
 }
 
-async fn push_message(mut req: Req) -> TResult<StatusCode> {
+#[derive(Serialize)]
+#[serde(tag = "status")]
+enum PushMessageResponse {
+    Full,
+    Ok,
+}
+
+async fn push_message(mut req: Req) -> Resp {
     use crate::queue::PushMessageResult::*;
 
     let PushMessage { payload } = req.body_json().await?;
     let queue_name = req.param("queue_name")?;
-    let res = req.state().push(queue_name, payload.into()).await;
-    match res {
-        Done => Ok(StatusCode::NoContent),
-        QueueDoesNotExist => Ok(StatusCode::NotFound),
+    Ok(match req.state().push(queue_name, payload.into()).await {
+        QueueDoesNotExist => Response::builder(StatusCode::NotFound),
+        res => {
+            let body = match res {
+                QueueDoesNotExist => unreachable!(),
+                Done => PushMessageResponse::Ok,
+                QueueIsFull => PushMessageResponse::Full,
+            };
+            Response::builder(StatusCode::Ok).body(Body::from_json(&body)?)
+        }
     }
+    .build())
 }
 
 #[derive(Serialize)]
 #[serde(tag = "status")]
-enum TakeMessage {
+enum TakeMessageResponse {
     Empty,
     Message { payload: String },
 }
@@ -40,12 +54,11 @@ async fn take_message(req: Req) -> Resp {
         res => {
             let body = match res {
                 QueueDoesNotExist => unreachable!(),
-                Message { payload } => TakeMessage::Message {
+                Message { payload } => TakeMessageResponse::Message {
                     payload: String::from_utf8_lossy(&payload).into(),
                 },
-                QueueIsEmpty => TakeMessage::Empty,
+                QueueIsEmpty => TakeMessageResponse::Empty,
             };
-
             Response::builder(StatusCode::Ok).body(Body::from_json(&body)?)
         }
     }
@@ -104,33 +117,34 @@ fn add_queue_endpoints(mut route: Route<QueueHub>) {
 }
 
 #[derive(Deserialize)]
-struct StatsParams {
+struct Stats {
     #[serde(default)]
     queue_name_prefix: String,
 }
 
 #[derive(Serialize)]
-struct Stats {
+struct StatsResponse {
     size: HashMap<String, usize>,
 }
 
 async fn stats(req: Req) -> TResult<Body> {
-    let q = req.state();
-    let params: StatsParams = req.query()?;
-    let response = Stats {
-        size: q.size(&params.queue_name_prefix).await,
+    let qh = req.state();
+    let params: Stats = req.query()?;
+    let response = StatsResponse {
+        size: qh.size(&params.queue_name_prefix).await,
     };
     Body::from_json(&response)
 }
 
-pub async fn start_http() -> IoResult<()> {
-    tide::log::start();
-    let state = QueueHub::new();
-    let mut app = tide::with_state(state.clone());
+pub async fn start_http(
+    queue_hub: QueueHub,
+    socket_addr: &str,
+) -> IoResult<()> {
+    let mut app = tide::with_state(queue_hub);
     app.at("/").get(|_| async { Ok("This is Flume") });
     add_messaging_endpoints(app.at("/messaging"));
     add_queue_endpoints(app.at("/queue"));
     app.at("/stats").get(stats);
-    app.listen("127.0.0.1:8080").await?;
+    app.listen(socket_addr).await?;
     Ok(())
 }
