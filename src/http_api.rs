@@ -1,10 +1,9 @@
 use crate::queue::QueueHub;
-use async_std::io::Result as IoResult;
+use async_std::{io::Result as IoResult, net::SocketAddr};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tide::{Body, Request, Response, Result as TResult, Route, StatusCode};
 
-type Req = Request<QueueHub>;
 type Resp = TResult<Response>;
 
 #[derive(Deserialize)]
@@ -19,7 +18,7 @@ enum PushMessageResponse {
     Ok,
 }
 
-async fn push_message(mut req: Req) -> Resp {
+async fn push_message<S: QueueHub>(mut req: Request<S>) -> Resp {
     use crate::queue::PushMessageResult::*;
 
     let PushMessage { payload } = req.body_json().await?;
@@ -45,7 +44,7 @@ enum TakeMessageResponse {
     Message { payload: String },
 }
 
-async fn take_message(req: Req) -> Resp {
+async fn take_message<S: QueueHub>(req: Request<S>) -> Resp {
     use crate::queue::TakeMessageResult::*;
 
     let queue_name = req.param("queue_name")?;
@@ -65,7 +64,7 @@ async fn take_message(req: Req) -> Resp {
     .build())
 }
 
-fn add_messaging_endpoints(mut route: Route<QueueHub>) {
+fn add_messaging_endpoints<S: QueueHub>(mut route: Route<S>) {
     route.at("/:queue_name/push").post(push_message);
     route.at("/:queue_name/take").post(take_message);
 }
@@ -75,7 +74,7 @@ struct CreateQueue {
     queue_name: String,
 }
 
-async fn create_queue(mut req: Req) -> Resp {
+async fn create_queue<S: QueueHub>(mut req: Request<S>) -> Resp {
     use crate::queue::CreateQueueResult::*;
 
     let CreateQueue { queue_name } = req.body_json().await?;
@@ -89,7 +88,7 @@ async fn create_queue(mut req: Req) -> Resp {
     .build())
 }
 
-async fn delete_queue(req: Req) -> TResult<StatusCode> {
+async fn delete_queue<S: QueueHub>(req: Request<S>) -> TResult<StatusCode> {
     use crate::queue::DeleteQueueResult::*;
 
     let queue_name = req.param("queue_name")?;
@@ -100,7 +99,7 @@ async fn delete_queue(req: Req) -> TResult<StatusCode> {
     }
 }
 
-async fn reset_queue(req: Req) -> TResult<StatusCode> {
+async fn reset_queue<S: QueueHub>(req: Request<S>) -> TResult<StatusCode> {
     use crate::queue::ResetQueueResult::*;
 
     let res = req.state().reset(req.param("queue_name")?).await;
@@ -110,7 +109,7 @@ async fn reset_queue(req: Req) -> TResult<StatusCode> {
     }
 }
 
-fn add_queue_endpoints(mut route: Route<QueueHub>) {
+fn add_queue_endpoints<S: QueueHub>(mut route: Route<S>) {
     route.at("/create").post(create_queue);
     route.at("/:queue_name").delete(delete_queue);
     route.at("/:queue_name/reset").post(reset_queue);
@@ -127,7 +126,7 @@ struct StatsResponse {
     size: HashMap<String, usize>,
 }
 
-async fn stats(req: Req) -> TResult<Body> {
+async fn stats<S: QueueHub>(req: Request<S>) -> TResult<Body> {
     let qh = req.state();
     let params: Stats = req.query()?;
     let response = StatsResponse {
@@ -136,10 +135,13 @@ async fn stats(req: Req) -> TResult<Body> {
     Body::from_json(&response)
 }
 
-pub async fn start_http(
-    queue_hub: QueueHub,
-    socket_addr: &str,
-) -> IoResult<()> {
+pub async fn start_http<QH>(
+    queue_hub: QH,
+    socket_addr: SocketAddr,
+) -> IoResult<()>
+where
+    QH: QueueHub,
+{
     let mut app = tide::with_state(queue_hub);
     app.at("/").get(|_| async { Ok("This is Flume") });
     add_messaging_endpoints(app.at("/messaging"));
