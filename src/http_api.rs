@@ -7,29 +7,30 @@ use tide::{Body, Request, Response, Result as TResult, Route, StatusCode};
 type Resp = TResult<Response>;
 
 #[derive(Deserialize)]
-struct PushMessage {
-    payload: String,
+struct PushMessages {
+    batch: Vec<String>,
 }
 
 #[derive(Serialize)]
 #[serde(tag = "status")]
-enum PushMessageResponse {
-    Full,
+enum PushMessagesResponse {
+    NotEnoughSpace,
     Ok,
 }
 
-async fn push_message<S: QueueHub>(mut req: Request<S>) -> Resp {
-    use crate::queue::PushMessageResult::*;
+async fn push_messages<S: QueueHub>(mut req: Request<S>) -> Resp {
+    use crate::queue::PushMessagesResult::*;
 
-    let PushMessage { payload } = req.body_json().await?;
+    let PushMessages { batch } = req.body_json().await?;
     let queue_name = req.param("queue_name")?;
-    Ok(match req.state().push(queue_name, payload.into()).await {
+    let batch = batch.into_iter().map(|payload| payload.into()).collect();
+    Ok(match req.state().push(queue_name, batch).await {
         QueueDoesNotExist => Response::builder(StatusCode::NotFound),
         res => {
             let body = match res {
                 QueueDoesNotExist => unreachable!(),
-                Done => PushMessageResponse::Ok,
-                QueueIsFull => PushMessageResponse::Full,
+                Done => PushMessagesResponse::Ok,
+                NoSpaceInQueue => PushMessagesResponse::NotEnoughSpace,
             };
             Response::builder(StatusCode::Ok).body(Body::from_json(&body)?)
         }
@@ -37,27 +38,30 @@ async fn push_message<S: QueueHub>(mut req: Request<S>) -> Resp {
     .build())
 }
 
-#[derive(Serialize)]
-#[serde(tag = "status")]
-enum TakeMessageResponse {
-    Empty,
-    Message { payload: String },
+#[derive(Deserialize)]
+struct TakeMessages {
+    number: usize,
 }
 
-async fn take_message<S: QueueHub>(req: Request<S>) -> Resp {
-    use crate::queue::TakeMessageResult::*;
+#[derive(Serialize)]
+struct TakeMessagesResponse {
+    batch: Vec<String>,
+}
 
+async fn take_messages<S: QueueHub>(mut req: Request<S>) -> Resp {
+    use crate::queue::TakeMessagesResult::*;
+
+    let TakeMessages { number } = req.body_json().await?;
     let queue_name = req.param("queue_name")?;
-    Ok(match req.state().take(queue_name).await {
+    Ok(match req.state().take(queue_name, number).await {
         QueueDoesNotExist => Response::builder(StatusCode::NotFound),
-        res => {
-            let body = match res {
-                QueueDoesNotExist => unreachable!(),
-                Message { payload } => TakeMessageResponse::Message {
-                    payload: String::from_utf8_lossy(&payload).into(),
-                },
-                QueueIsEmpty => TakeMessageResponse::Empty,
-            };
+
+        Messages { batch } => {
+            let batch = batch
+                .into_iter()
+                .map(|payload| String::from_utf8_lossy(&payload).into())
+                .collect();
+            let body = TakeMessagesResponse { batch };
             Response::builder(StatusCode::Ok).body(Body::from_json(&body)?)
         }
     }
@@ -65,8 +69,9 @@ async fn take_message<S: QueueHub>(req: Request<S>) -> Resp {
 }
 
 fn add_messaging_endpoints<S: QueueHub>(mut route: Route<S>) {
-    route.at("/:queue_name/push").post(push_message);
-    route.at("/:queue_name/take").post(take_message);
+    //TODO: endpoints for binary payload
+    route.at("/:queue_name/push").post(push_messages);
+    route.at("/:queue_name/take").post(take_messages);
 }
 
 #[derive(Deserialize)]

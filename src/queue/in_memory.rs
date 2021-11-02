@@ -4,8 +4,8 @@ use patricia_tree::PatriciaMap;
 use std::collections::{HashMap, VecDeque};
 
 use super::{
-    CreateQueueResult, DeleteQueueResult, Payload, PushMessageResult, QueueHub,
-    ResetQueueResult, TakeMessageResult,
+    Batch, CreateQueueResult, DeleteQueueResult, Payload, PushMessagesResult,
+    QueueHub, ResetQueueResult, TakeMessagesResult,
 };
 
 type Queues = RwLock<PatriciaMap<Mutex<VecDeque<Payload>>>>;
@@ -27,6 +27,8 @@ impl InMemoryQueueHub {
 
 #[async_trait]
 impl QueueHub for InMemoryQueueHub {
+    type Position = usize;
+
     async fn create_queue(&self, queue_name: &str) -> CreateQueueResult {
         use CreateQueueResult::*;
 
@@ -61,37 +63,39 @@ impl QueueHub for InMemoryQueueHub {
         }
     }
 
-    async fn push(
-        &self,
-        queue_name: &str,
-        payload: Payload,
-    ) -> PushMessageResult {
-        use PushMessageResult::*;
+    async fn push(&self, queue_name: &str, batch: Batch) -> PushMessagesResult {
+        use PushMessagesResult::*;
 
         let qs = self.queues.read().await;
         match qs.get(queue_name) {
             Some(q) => {
                 let mut q = q.lock().await;
-                if q.len() < self.max_queue_size {
-                    q.push_back(payload);
+                if q.len() + batch.len() <= self.max_queue_size {
+                    q.extend(batch);
                     Done
                 } else {
-                    QueueIsFull
+                    NoSpaceInQueue
                 }
             }
             None => QueueDoesNotExist,
         }
     }
 
-    async fn take(&self, queue_name: &str) -> TakeMessageResult {
-        use TakeMessageResult::*;
+    async fn take(
+        &self,
+        queue_name: &str,
+        mut number: usize,
+    ) -> TakeMessagesResult {
+        use TakeMessagesResult::*;
 
         let qs = self.queues.read().await;
         match qs.get(queue_name) {
-            Some(q) => match q.lock().await.pop_front() {
-                Some(payload) => Message { payload },
-                None => QueueIsEmpty,
-            },
+            Some(q) => {
+                let mut q = q.lock().await;
+                number = number.min(q.len());
+                let batch = q.drain(..number).collect();
+                Messages { batch }
+            }
             None => QueueDoesNotExist,
         }
     }
