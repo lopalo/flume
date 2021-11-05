@@ -2,7 +2,7 @@ pub mod in_memory;
 
 pub use self::queue_name::QueueName;
 use async_trait::async_trait;
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::HashMap;
 
 pub type Payloads = Vec<Payload>;
@@ -10,7 +10,7 @@ pub type Messages<Pos> = Vec<Message<Pos>>;
 
 #[async_trait]
 pub trait QueueHub: Clone + Send + Sync + 'static {
-    type Position: Serialize;
+    type Position: Send + Sync + Serialize + DeserializeOwned;
 
     async fn create_queue(&self, queue_name: QueueName) -> CreateQueueResult;
 
@@ -57,11 +57,7 @@ pub trait QueueHub: Clone + Send + Sync + 'static {
 
     //TODO: collect_garbage method
 
-    //TODO: size of queues for each consumer for each queue
-    async fn size(
-        &self,
-        queue_name_prefix: &QueueName,
-    ) -> HashMap<QueueName, usize>;
+    async fn stats(&self, queue_name_prefix: &QueueName) -> Stats;
 }
 
 mod queue_name {
@@ -136,6 +132,18 @@ where
 }
 
 pub enum CommitMessagesResult {
-    // Committed ( usize ),
-// QueueDoesNotExist,
+    Committed(usize),
+    QueueDoesNotExist,
+    UnknownConsumer,
+    PositionIsOutOfQueue,
 }
+
+#[derive(Serialize)]
+pub struct QueueStats {
+    size: usize,
+    consumers: usize,
+    min_unconsumed_size: usize,
+    max_unconsumer_size: usize,
+}
+
+pub type Stats = HashMap<QueueName, QueueStats>;

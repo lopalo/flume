@@ -1,7 +1,6 @@
-use crate::queue::{Consumer, Messages, Payloads, QueueHub, QueueName};
+use crate::queue::{self, Consumer, Messages, Payloads, QueueHub, QueueName};
 use async_std::{io::Result as IoResult, net::SocketAddr};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
 use tide::{Body, Request, Response, Result as TResult, Route, StatusCode};
 
 type Resp = TResult<Response>;
@@ -31,14 +30,14 @@ async fn push_messages<S: QueueHub>(mut req: Request<S>) -> Resp {
 }
 
 #[derive(Deserialize)]
-struct TakeMessages {
+struct ReadMessages {
     consumer: Consumer,
     number: usize,
 }
 
 #[derive(Serialize)]
 #[serde(tag = "status")]
-enum TakeMessagesResponse<Pos>
+enum ReadMessagesResponse<Pos>
 where
     Pos: Serialize,
 {
@@ -46,26 +45,81 @@ where
     UnknownConsumer,
 }
 
+async fn read_messages<S: QueueHub>(mut req: Request<S>) -> Resp {
+    use crate::queue::ReadMessagesResult::*;
+
+    let ReadMessages { consumer, number } = req.body_json().await?;
+    let queue_name = get_queue_name(&req)?;
+    match req.state().read(&queue_name, &consumer, number).await {
+        QueueDoesNotExist => not_found(),
+        UnknownConsumer => {
+            json_response(ReadMessagesResponse::UnknownConsumer::<S::Position>)
+        }
+
+        Messages(batch) => {
+            json_response(ReadMessagesResponse::Messages { batch })
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct CommitMessages<Pos> {
+    consumer: Consumer,
+    position: Pos,
+}
+
+#[derive(Serialize)]
+#[serde(tag = "status")]
+enum CommitMessagesResponse {
+    Committed { number: usize },
+    UnknownConsumer,
+    PositionIsOutOfQueue,
+}
+
+async fn commit_messages<S: QueueHub>(mut req: Request<S>) -> Resp {
+    use crate::queue::CommitMessagesResult::*;
+
+    let params: CommitMessages<S::Position> = req.body_json().await?;
+    let CommitMessages { consumer, position } = params;
+    let queue_name = get_queue_name(&req)?;
+    match req.state().commit(&queue_name, &consumer, &position).await {
+        QueueDoesNotExist => not_found(),
+        UnknownConsumer => {
+            json_response(CommitMessagesResponse::UnknownConsumer)
+        }
+        PositionIsOutOfQueue => {
+            json_response(CommitMessagesResponse::PositionIsOutOfQueue)
+        }
+        Committed(number) => {
+            json_response(CommitMessagesResponse::Committed { number })
+        }
+    }
+}
+
 async fn take_messages<S: QueueHub>(mut req: Request<S>) -> Resp {
     use crate::queue::ReadMessagesResult::*;
 
-    let TakeMessages { consumer, number } = req.body_json().await?;
+    let ReadMessages { consumer, number } = req.body_json().await?;
     let queue_name = get_queue_name(&req)?;
     match req.state().take(&queue_name, &consumer, number).await {
         QueueDoesNotExist => not_found(),
         UnknownConsumer => {
-            json_response(TakeMessagesResponse::UnknownConsumer::<S::Position>)
+            json_response(ReadMessagesResponse::UnknownConsumer::<S::Position>)
         }
 
         Messages(batch) => {
-            json_response(TakeMessagesResponse::Messages { batch })
+            json_response(ReadMessagesResponse::Messages { batch })
         }
     }
 }
 
 fn add_messaging_endpoints<S: QueueHub>(mut route: Route<S>) {
     route.at("/:queue_name/push").post(push_messages);
+    //TODO: GET method with parameters in URL?
+    route.at("/:queue_name/read").post(read_messages);
+    route.at("/:queue_name/commit").post(commit_messages);
     route.at("/:queue_name/take").post(take_messages);
+    //TODO: SSE for streaming messages
 }
 
 #[derive(Deserialize)]
@@ -155,8 +209,12 @@ async fn remove_consumer<S: QueueHub>(mut req: Request<S>) -> Resp {
 }
 
 fn add_queue_endpoints<S: QueueHub>(mut route: Route<S>) {
+    //TODO:
+    // route.at("/list").get(queue_list);
     route.at("/create").post(create_queue);
     route.at("/:queue_name").delete(delete_queue);
+    //TODO:
+    // route.at("/:queue_name/consumers").get(queue_consumers);
     route.at("/:queue_name/add_consumer").post(add_consumer);
     route
         .at("/:queue_name/remove_consumer")
@@ -171,14 +229,14 @@ struct Stats {
 
 #[derive(Serialize)]
 struct StatsResponse {
-    size: HashMap<QueueName, usize>,
+    stats: queue::Stats,
 }
 
 async fn stats<S: QueueHub>(req: Request<S>) -> TResult<Body> {
     let qh = req.state();
     let params: Stats = req.query()?;
     let response = StatsResponse {
-        size: qh.size(&params.queue_name_prefix).await,
+        stats: qh.stats(&params.queue_name_prefix).await,
     };
     Body::from_json(&response)
 }

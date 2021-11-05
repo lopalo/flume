@@ -1,12 +1,12 @@
 use async_std::sync::{Arc, Mutex, RwLock};
 use async_trait::async_trait;
 use patricia_tree::PatriciaMap;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{hash_map::Entry, HashMap, VecDeque};
 
 use super::*;
 
-#[derive(Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Pos(usize);
 
 impl Pos {
@@ -20,12 +20,12 @@ impl Pos {
 }
 
 struct Queue {
-    next_position: Pos,
-    consumers: HashMap<Consumer, Pos>,
-    messages: VecDeque<Message<Pos>>,
+    next_position: Mutex<Pos>,
+    messages: RwLock<VecDeque<Message<Pos>>>,
+    consumers: RwLock<HashMap<Consumer, Mutex<Pos>>>,
 }
 
-type Queues = RwLock<PatriciaMap<Mutex<Queue>>>;
+type Queues = RwLock<PatriciaMap<Queue>>;
 
 #[derive(Clone)]
 pub struct InMemoryQueueHub {
@@ -54,11 +54,11 @@ impl QueueHub for InMemoryQueueHub {
             QueueAlreadyExists
         } else {
             let q = Queue {
-                next_position: Pos(0),
-                consumers: HashMap::new(),
-                messages: VecDeque::new(),
+                next_position: Mutex::new(Pos(0)),
+                messages: RwLock::new(VecDeque::new()),
+                consumers: RwLock::new(HashMap::new()),
             };
-            qs.insert(queue_name, Mutex::new(q));
+            qs.insert(queue_name, q);
             Done
         }
     }
@@ -83,16 +83,18 @@ impl QueueHub for InMemoryQueueHub {
         use AddConsumerResult::*;
 
         if let Some(q) = self.queues.read().await.get(queue_name) {
-            let mut q = q.lock().await;
+            let next_pos = q.next_position.lock().await;
             let position = q
                 .messages
+                .read()
+                .await
                 .front()
                 .map(|m| m.position.clone())
-                .unwrap_or_else(|| q.next_position.clone());
-            match q.consumers.entry(consumer) {
+                .unwrap_or_else(|| next_pos.clone());
+            match q.consumers.write().await.entry(consumer) {
                 Entry::Occupied(_) => ConsumerAlreadyAdded,
                 Entry::Vacant(entry) => {
-                    entry.insert(position);
+                    entry.insert(Mutex::new(position));
                     Done
                 }
             }
@@ -109,7 +111,7 @@ impl QueueHub for InMemoryQueueHub {
         use RemoveConsumerResult::*;
 
         if let Some(q) = self.queues.read().await.get(queue_name) {
-            match q.lock().await.consumers.remove(consumer) {
+            match q.consumers.write().await.remove(consumer) {
                 Some(_) => Done,
                 None => UnknownConsumer,
             }
@@ -127,14 +129,11 @@ impl QueueHub for InMemoryQueueHub {
 
         let qs = self.queues.read().await;
         match qs.get(queue_name) {
-            Some(q_mutex) => {
-                let mut q_guard = q_mutex.lock().await;
-                // Extracts Queue from MutexGuard to split
-                // the mutable borrow for multiple fields
-                let q: &mut Queue = &mut q_guard;
-                if q.messages.len() + batch.len() <= self.max_queue_size {
-                    let next_position = &mut q.next_position;
-                    q.messages.extend(batch.into_iter().map(|payload| {
+            Some(q) => {
+                let mut next_position = q.next_position.lock().await;
+                let mut messages = q.messages.write().await;
+                if messages.len() + batch.len() <= self.max_queue_size {
+                    messages.extend(batch.into_iter().map(|payload| {
                         let position = next_position.clone();
                         next_position.incr();
                         Message { position, payload }
@@ -150,22 +149,79 @@ impl QueueHub for InMemoryQueueHub {
 
     async fn read(
         &self,
-        _queue_name: &QueueName,
-        _consumer: &Consumer,
-        _number: usize,
+        queue_name: &QueueName,
+        consumer: &Consumer,
+        number: usize,
     ) -> ReadMessagesResult<Self::Position> {
-        //TODO:
-        unimplemented!()
+        use ReadMessagesResult::*;
+
+        let qs = self.queues.read().await;
+        match qs.get(queue_name) {
+            Some(q) => {
+                let messages = q.messages.read().await;
+                let consumers = q.consumers.read().await;
+                match consumers.get(consumer) {
+                    Some(pos_mutex) => {
+                        let pos_guard = pos_mutex.lock().await;
+                        let pos = &*pos_guard;
+                        let start_idx = messages
+                            .binary_search_by_key(pos, |m| m.position.clone());
+                        let start_idx = match start_idx {
+                            Ok(idx) => idx,
+                            Err(_) => return Messages(vec![]),
+                        };
+                        let end_idx = (start_idx + number).min(messages.len());
+                        let batch: Vec<_> = messages
+                            .range(start_idx..end_idx)
+                            .map(|msg| msg.clone())
+                            .collect();
+                        Messages(batch)
+                    }
+                    None => UnknownConsumer,
+                }
+            }
+            None => QueueDoesNotExist,
+        }
     }
 
     async fn commit(
         &self,
-        _queue_name: &QueueName,
-        _consumer: &Consumer,
-        _position: &Self::Position,
+        queue_name: &QueueName,
+        consumer: &Consumer,
+        position: &Self::Position,
     ) -> CommitMessagesResult {
-        //TODO:
-        unimplemented!()
+        use CommitMessagesResult::*;
+
+        let qs = self.queues.read().await;
+        match qs.get(queue_name) {
+            Some(q) => {
+                let messages = q.messages.read().await;
+                let consumers = q.consumers.read().await;
+                match consumers.get(consumer) {
+                    Some(pos_mutex) => {
+                        let mut pos_guard = pos_mutex.lock().await;
+                        let consumer_pos = &mut *pos_guard;
+                        if position < consumer_pos {
+                            return PositionIsOutOfQueue;
+                        }
+                        let idx = messages
+                            .binary_search_by_key(position, |m| {
+                                m.position.clone()
+                            });
+                        if let Err(..) = idx {
+                            return PositionIsOutOfQueue;
+                        }
+                        let prev_pos = consumer_pos.clone();
+                        *consumer_pos = position.clone();
+                        consumer_pos.incr();
+                        let committed = consumer_pos.0 - prev_pos.0;
+                        Committed(committed)
+                    }
+                    None => UnknownConsumer,
+                }
+            }
+            None => QueueDoesNotExist,
+        }
     }
 
     async fn take(
@@ -178,12 +234,13 @@ impl QueueHub for InMemoryQueueHub {
 
         let qs = self.queues.read().await;
         match qs.get(queue_name) {
-            Some(q_mutex) => {
-                let mut q_guard = q_mutex.lock().await;
-                let q: &mut Queue = &mut q_guard;
-                let messages = &mut q.messages;
-                match q.consumers.get_mut(consumer) {
-                    Some(pos) => {
+            Some(q) => {
+                let messages = q.messages.read().await;
+                let consumers = q.consumers.read().await;
+                match consumers.get(consumer) {
+                    Some(pos_mutex) => {
+                        let mut pos_guard = pos_mutex.lock().await;
+                        let pos = &mut *pos_guard;
                         let start_idx = messages
                             .binary_search_by_key(pos, |m| m.position.clone());
                         let start_idx = match start_idx {
@@ -205,17 +262,33 @@ impl QueueHub for InMemoryQueueHub {
         }
     }
 
-    async fn size(
-        &self,
-        queue_name_prefix: &QueueName,
-    ) -> HashMap<QueueName, usize> {
+    async fn stats(&self, queue_name_prefix: &QueueName) -> Stats {
         let mut res = HashMap::new();
         let qs = self.queues.read().await;
         let q_names = qs.iter_prefix(queue_name_prefix.as_ref());
         for (queue_name, queue) in q_names {
+            let last_pos = queue.next_position.lock().await.0;
+            let messages = queue.messages.read().await;
+            let size = messages.len();
+            let mut min_consumer_pos = last_pos;
+            let mut max_consumer_pos =
+                messages.front().map(|m| m.position.0).unwrap_or(last_pos);
+            drop(messages);
+            let consumers = queue.consumers.read().await;
+            for consumer_pos in consumers.values() {
+                let consumer_pos = consumer_pos.lock().await.0;
+                min_consumer_pos = min_consumer_pos.min(consumer_pos);
+                max_consumer_pos = max_consumer_pos.max(consumer_pos);
+            }
+            let q_stats = QueueStats {
+                size,
+                consumers: consumers.len(),
+                min_unconsumed_size: last_pos - max_consumer_pos,
+                max_unconsumer_size: last_pos - min_consumer_pos,
+            };
             res.insert(
                 QueueName::new(String::from_utf8(queue_name).unwrap()),
-                queue.lock().await.messages.len(),
+                q_stats,
             );
         }
         res
