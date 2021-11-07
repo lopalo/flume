@@ -3,6 +3,7 @@ use dotenv;
 use std::env::{self, VarError};
 use std::process;
 use std::str::FromStr;
+use std::time::Duration;
 use tide::log::LevelFilter;
 
 pub enum QueueHubType {
@@ -23,6 +24,7 @@ impl FromStr for QueueHubType {
 pub struct Config {
     pub log_level: LevelFilter,
     pub max_queue_size: usize,
+    pub garbage_collection_period: Duration,
     pub queue_hub_type: QueueHubType,
     pub http_sock_address: SocketAddr,
 }
@@ -39,6 +41,12 @@ pub fn read_config() -> Config {
     let max_queue_size =
         parse_env_var("MAX_QUEUE_SIZE", "a positive number", 10_000);
 
+    let garbage_collection_period = Duration::from_millis(parse_env_var(
+        "GARBAGE_COLLECTION_PERIOD_MS",
+        "a positive number in milliseconds",
+        30_000,
+    ));
+
     let queue_hub_type = parse_env_var(
         "QUEUE_HUB_TYPE",
         "one of: in-memory",
@@ -54,6 +62,7 @@ pub fn read_config() -> Config {
     Config {
         log_level,
         max_queue_size,
+        garbage_collection_period,
         queue_hub_type,
         http_sock_address,
     }

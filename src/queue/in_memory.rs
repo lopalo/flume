@@ -262,6 +262,48 @@ impl QueueHub for InMemoryQueueHub {
         }
     }
 
+    async fn collect_garbage(&self) {
+        for queue in self.queues.read().await.values() {
+            let mut min_pos = queue.next_position.lock().await.clone();
+            let mut messages = queue.messages.write().await;
+            let consumers = queue.consumers.read().await;
+            if consumers.is_empty() {
+                continue;
+            };
+            for consumer_pos in consumers.values() {
+                min_pos = min_pos.min(consumer_pos.lock().await.clone());
+            }
+            let start_idx =
+                messages.binary_search_by_key(&min_pos, |m| m.position.clone());
+            let idx = match start_idx {
+                Ok(idx) => idx,
+                Err(idx) => idx,
+            };
+            messages.drain(..idx);
+        }
+    }
+
+    async fn queue_names(&self) -> Vec<QueueName> {
+        self.queues
+            .read()
+            .await
+            .keys()
+            .map(|name| QueueName::new(String::from_utf8(name).unwrap()))
+            .collect()
+    }
+
+    async fn consumers(&self, queue_name: &QueueName) -> GetConsumersResult {
+        use GetConsumersResult::*;
+
+        if let Some(q) = self.queues.read().await.get(queue_name) {
+            Consumers(
+                q.consumers.read().await.keys().map(|c| c.clone()).collect(),
+            )
+        } else {
+            QueueDoesNotExist
+        }
+    }
+
     async fn stats(&self, queue_name_prefix: &QueueName) -> Stats {
         let mut res = HashMap::new();
         let qs = self.queues.read().await;

@@ -20,8 +20,8 @@ enum PushMessagesResponse {
 async fn push_messages<S: QueueHub>(mut req: Request<S>) -> Resp {
     use crate::queue::PushMessagesResult::*;
 
-    let PushMessages { batch } = req.body_json().await?;
     let queue_name = get_queue_name(&req)?;
+    let PushMessages { batch } = req.body_json().await?;
     match req.state().push(&queue_name, batch).await {
         QueueDoesNotExist => not_found(),
         Done => json_response(PushMessagesResponse::Ok),
@@ -45,11 +45,11 @@ where
     UnknownConsumer,
 }
 
-async fn read_messages<S: QueueHub>(mut req: Request<S>) -> Resp {
+async fn read_messages<S: QueueHub>(req: Request<S>) -> Resp {
     use crate::queue::ReadMessagesResult::*;
 
-    let ReadMessages { consumer, number } = req.body_json().await?;
     let queue_name = get_queue_name(&req)?;
+    let ReadMessages { consumer, number } = req.query()?;
     match req.state().read(&queue_name, &consumer, number).await {
         QueueDoesNotExist => not_found(),
         UnknownConsumer => {
@@ -79,9 +79,9 @@ enum CommitMessagesResponse {
 async fn commit_messages<S: QueueHub>(mut req: Request<S>) -> Resp {
     use crate::queue::CommitMessagesResult::*;
 
-    let params: CommitMessages<S::Position> = req.body_json().await?;
-    let CommitMessages { consumer, position } = params;
     let queue_name = get_queue_name(&req)?;
+    let params: CommitMessages<S::Position> = req.body_form().await?;
+    let CommitMessages { consumer, position } = params;
     match req.state().commit(&queue_name, &consumer, &position).await {
         QueueDoesNotExist => not_found(),
         UnknownConsumer => {
@@ -99,8 +99,8 @@ async fn commit_messages<S: QueueHub>(mut req: Request<S>) -> Resp {
 async fn take_messages<S: QueueHub>(mut req: Request<S>) -> Resp {
     use crate::queue::ReadMessagesResult::*;
 
-    let ReadMessages { consumer, number } = req.body_json().await?;
     let queue_name = get_queue_name(&req)?;
+    let ReadMessages { consumer, number } = req.body_form().await?;
     match req.state().take(&queue_name, &consumer, number).await {
         QueueDoesNotExist => not_found(),
         UnknownConsumer => {
@@ -115,8 +115,7 @@ async fn take_messages<S: QueueHub>(mut req: Request<S>) -> Resp {
 
 fn add_messaging_endpoints<S: QueueHub>(mut route: Route<S>) {
     route.at("/:queue_name/push").post(push_messages);
-    //TODO: GET method with parameters in URL?
-    route.at("/:queue_name/read").post(read_messages);
+    route.at("/:queue_name/read").get(read_messages);
     route.at("/:queue_name/commit").post(commit_messages);
     route.at("/:queue_name/take").post(take_messages);
     //TODO: SSE for streaming messages
@@ -130,7 +129,7 @@ struct CreateQueue {
 async fn create_queue<S: QueueHub>(mut req: Request<S>) -> Resp {
     use crate::queue::CreateQueueResult::*;
 
-    let CreateQueue { queue_name } = req.body_json().await?;
+    let CreateQueue { queue_name } = req.body_form().await?;
     let res = req.state().create_queue(queue_name).await;
     Ok(match res {
         Done => Response::builder(StatusCode::Created),
@@ -167,11 +166,9 @@ enum AddConsumerResult {
 async fn add_consumer<S: QueueHub>(mut req: Request<S>) -> Resp {
     use crate::queue::AddConsumerResult::*;
 
-    let AddConsumer { consumer } = req.body_json().await?;
-    let res = req
-        .state()
-        .add_consumer(&get_queue_name(&req)?, consumer)
-        .await;
+    let queue_name = get_queue_name(&req)?;
+    let AddConsumer { consumer } = req.body_form().await?;
+    let res = req.state().add_consumer(&queue_name, consumer).await;
     match res {
         QueueDoesNotExist => not_found(),
         ConsumerAlreadyAdded => {
@@ -196,11 +193,9 @@ enum RemoveConsumerResult {
 async fn remove_consumer<S: QueueHub>(mut req: Request<S>) -> Resp {
     use crate::queue::RemoveConsumerResult::*;
 
-    let RemoveConsumer { consumer } = req.body_json().await?;
-    let res = req
-        .state()
-        .remove_consumer(&get_queue_name(&req)?, &consumer)
-        .await;
+    let queue_name = get_queue_name(&req)?;
+    let RemoveConsumer { consumer } = req.body_form().await?;
+    let res = req.state().remove_consumer(&queue_name, &consumer).await;
     match res {
         QueueDoesNotExist => not_found(),
         UnknownConsumer => json_response(RemoveConsumerResult::UnknownConsumer),
@@ -208,13 +203,38 @@ async fn remove_consumer<S: QueueHub>(mut req: Request<S>) -> Resp {
     }
 }
 
+#[derive(Serialize)]
+struct QueueListResponse {
+    queue_names: Vec<QueueName>,
+}
+
+async fn queue_list<S: QueueHub>(req: Request<S>) -> TResult<Body> {
+    let queue_names = req.state().queue_names().await;
+    Body::from_json(&QueueListResponse { queue_names })
+}
+
+#[derive(Serialize)]
+struct GetConsumersResponse {
+    consumers: Vec<Consumer>,
+}
+
+async fn queue_consumers<S: QueueHub>(req: Request<S>) -> Resp {
+    use crate::queue::GetConsumersResult::*;
+
+    let queue_name = get_queue_name(&req)?;
+    match req.state().consumers(&queue_name).await {
+        QueueDoesNotExist => not_found(),
+        Consumers(consumers) => {
+            json_response(GetConsumersResponse { consumers })
+        }
+    }
+}
+
 fn add_queue_endpoints<S: QueueHub>(mut route: Route<S>) {
-    //TODO:
-    // route.at("/list").get(queue_list);
+    route.at("/list").get(queue_list);
     route.at("/create").post(create_queue);
     route.at("/:queue_name").delete(delete_queue);
-    //TODO:
-    // route.at("/:queue_name/consumers").get(queue_consumers);
+    route.at("/:queue_name/consumers").get(queue_consumers);
     route.at("/:queue_name/add_consumer").post(add_consumer);
     route
         .at("/:queue_name/remove_consumer")
@@ -232,11 +252,11 @@ struct StatsResponse {
     stats: queue::Stats,
 }
 
-async fn stats<S: QueueHub>(req: Request<S>) -> TResult<Body> {
+async fn get_stats<S: QueueHub>(req: Request<S>) -> TResult<Body> {
     let qh = req.state();
-    let params: Stats = req.query()?;
+    let Stats { queue_name_prefix } = req.query()?;
     let response = StatsResponse {
-        stats: qh.stats(&params.queue_name_prefix).await,
+        stats: qh.stats(&queue_name_prefix).await,
     };
     Body::from_json(&response)
 }
@@ -252,7 +272,7 @@ where
     app.at("/").get(|_| async { Ok("This is Flume") });
     add_messaging_endpoints(app.at("/messaging"));
     add_queue_endpoints(app.at("/queue"));
-    app.at("/stats").get(stats);
+    app.at("/stats").get(get_stats);
     app.listen(socket_addr).await?;
     Ok(())
 }

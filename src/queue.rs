@@ -55,7 +55,11 @@ pub trait QueueHub: Clone + Send + Sync + 'static {
         number: usize,
     ) -> ReadMessagesResult<Self::Position>;
 
-    //TODO: collect_garbage method
+    async fn collect_garbage(&self);
+
+    async fn queue_names(&self) -> Vec<QueueName>;
+
+    async fn consumers(&self, queue_name: &QueueName) -> GetConsumersResult;
 
     async fn stats(&self, queue_name_prefix: &QueueName) -> Stats;
 }
@@ -79,7 +83,7 @@ mod queue_name {
     }
 }
 
-#[derive(PartialEq, Eq, Hash, Deserialize)]
+#[derive(PartialEq, Eq, Hash, Clone, Serialize, Deserialize)]
 pub struct Consumer(String);
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -136,6 +140,11 @@ pub enum CommitMessagesResult {
     QueueDoesNotExist,
     UnknownConsumer,
     PositionIsOutOfQueue,
+}
+
+pub enum GetConsumersResult {
+    Consumers(Vec<Consumer>),
+    QueueDoesNotExist,
 }
 
 #[derive(Serialize)]
