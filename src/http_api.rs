@@ -22,7 +22,7 @@ async fn push_messages<S: QueueHub>(mut req: Request<S>) -> Resp {
 
     let queue_name = get_queue_name(&req)?;
     let PushMessages { batch } = req.body_json().await?;
-    match req.state().push(&queue_name, batch).await {
+    match req.state().push(&queue_name, batch).await? {
         QueueDoesNotExist => not_found(),
         Done => json_response(PushMessagesResponse::Ok),
         NoSpaceInQueue => json_response(PushMessagesResponse::NotEnoughSpace),
@@ -50,7 +50,7 @@ async fn read_messages<S: QueueHub>(req: Request<S>) -> Resp {
 
     let queue_name = get_queue_name(&req)?;
     let ReadMessages { consumer, number } = req.query()?;
-    match req.state().read(&queue_name, &consumer, number).await {
+    match req.state().read(&queue_name, &consumer, number).await? {
         QueueDoesNotExist => not_found(),
         UnknownConsumer => {
             json_response(ReadMessagesResponse::UnknownConsumer::<S::Position>)
@@ -82,7 +82,11 @@ async fn commit_messages<S: QueueHub>(mut req: Request<S>) -> Resp {
     let queue_name = get_queue_name(&req)?;
     let params: CommitMessages<S::Position> = req.body_form().await?;
     let CommitMessages { consumer, position } = params;
-    match req.state().commit(&queue_name, &consumer, &position).await {
+    match req
+        .state()
+        .commit(&queue_name, &consumer, &position)
+        .await?
+    {
         QueueDoesNotExist => not_found(),
         UnknownConsumer => {
             json_response(CommitMessagesResponse::UnknownConsumer)
@@ -101,7 +105,7 @@ async fn take_messages<S: QueueHub>(mut req: Request<S>) -> Resp {
 
     let queue_name = get_queue_name(&req)?;
     let ReadMessages { consumer, number } = req.body_form().await?;
-    match req.state().take(&queue_name, &consumer, number).await {
+    match req.state().take(&queue_name, &consumer, number).await? {
         QueueDoesNotExist => not_found(),
         UnknownConsumer => {
             json_response(ReadMessagesResponse::UnknownConsumer::<S::Position>)
@@ -130,7 +134,7 @@ async fn create_queue<S: QueueHub>(mut req: Request<S>) -> Resp {
     use crate::queue::CreateQueueResult::*;
 
     let CreateQueue { queue_name } = req.body_form().await?;
-    let res = req.state().create_queue(queue_name).await;
+    let res = req.state().create_queue(queue_name).await?;
     Ok(match res {
         Done => Response::builder(StatusCode::Created),
         QueueAlreadyExists => {
@@ -144,7 +148,7 @@ async fn delete_queue<S: QueueHub>(req: Request<S>) -> TResult<StatusCode> {
     use crate::queue::DeleteQueueResult::*;
 
     let queue_name = get_queue_name(&req)?;
-    let res = req.state().delete_queue(&queue_name).await;
+    let res = req.state().delete_queue(&queue_name).await?;
     match res {
         Done => Ok(StatusCode::NoContent),
         QueueDoesNotExist => Ok(StatusCode::NotFound),
@@ -168,7 +172,7 @@ async fn add_consumer<S: QueueHub>(mut req: Request<S>) -> Resp {
 
     let queue_name = get_queue_name(&req)?;
     let AddConsumer { consumer } = req.body_form().await?;
-    let res = req.state().add_consumer(&queue_name, consumer).await;
+    let res = req.state().add_consumer(&queue_name, consumer).await?;
     match res {
         QueueDoesNotExist => not_found(),
         ConsumerAlreadyAdded => {
@@ -195,7 +199,7 @@ async fn remove_consumer<S: QueueHub>(mut req: Request<S>) -> Resp {
 
     let queue_name = get_queue_name(&req)?;
     let RemoveConsumer { consumer } = req.body_form().await?;
-    let res = req.state().remove_consumer(&queue_name, &consumer).await;
+    let res = req.state().remove_consumer(&queue_name, &consumer).await?;
     match res {
         QueueDoesNotExist => not_found(),
         UnknownConsumer => json_response(RemoveConsumerResult::UnknownConsumer),
@@ -209,7 +213,7 @@ struct QueueListResponse {
 }
 
 async fn queue_list<S: QueueHub>(req: Request<S>) -> TResult<Body> {
-    let queue_names = req.state().queue_names().await;
+    let queue_names = req.state().queue_names().await?;
     Body::from_json(&QueueListResponse { queue_names })
 }
 
@@ -222,7 +226,7 @@ async fn queue_consumers<S: QueueHub>(req: Request<S>) -> Resp {
     use crate::queue::GetConsumersResult::*;
 
     let queue_name = get_queue_name(&req)?;
-    match req.state().consumers(&queue_name).await {
+    match req.state().consumers(&queue_name).await? {
         QueueDoesNotExist => not_found(),
         Consumers(consumers) => {
             json_response(GetConsumersResponse { consumers })
@@ -256,7 +260,7 @@ async fn get_stats<S: QueueHub>(req: Request<S>) -> TResult<Body> {
     let qh = req.state();
     let Stats { queue_name_prefix } = req.query()?;
     let response = StatsResponse {
-        stats: qh.stats(&queue_name_prefix).await,
+        stats: qh.stats(&queue_name_prefix).await?,
     };
     Body::from_json(&response)
 }

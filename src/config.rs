@@ -1,5 +1,6 @@
 use async_std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use dotenv;
+use sqlx::sqlite::SqliteConnectOptions;
 use std::env::{self, VarError};
 use std::process;
 use std::str::FromStr;
@@ -8,6 +9,7 @@ use tide::log::LevelFilter;
 
 pub enum QueueHubType {
     InMemory,
+    Sqlite,
 }
 
 impl FromStr for QueueHubType {
@@ -16,6 +18,7 @@ impl FromStr for QueueHubType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match &s.to_lowercase()[..] {
             "in-memory" => Ok(Self::InMemory),
+            "sqlite" => Ok(Self::Sqlite),
             _ => Err(()),
         }
     }
@@ -27,6 +30,7 @@ pub struct Config {
     pub garbage_collection_period: Duration,
     pub queue_hub_type: QueueHubType,
     pub http_sock_address: SocketAddr,
+    pub database_url: SqliteConnectOptions,
 }
 
 pub fn read_config() -> Config {
@@ -59,12 +63,19 @@ pub fn read_config() -> Config {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8822),
     );
 
+    let database_url = parse_env_var(
+        "DATABASE_URL",
+        "a valid path to an SQLite database: sqlite://<path>",
+        SqliteConnectOptions::new().filename("sqlite://db/queue_hub.db"),
+    );
+
     Config {
         log_level,
         max_queue_size,
         garbage_collection_period,
         queue_hub_type,
         http_sock_address,
+        database_url,
     }
 }
 

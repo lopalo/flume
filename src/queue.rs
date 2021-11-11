@@ -1,6 +1,8 @@
 pub mod in_memory;
+pub mod sqlite;
 
 pub use self::queue_name::QueueName;
+use anyhow::Result;
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::collections::HashMap;
@@ -12,56 +14,65 @@ pub type Messages<Pos> = Vec<Message<Pos>>;
 pub trait QueueHub: Clone + Send + Sync + 'static {
     type Position: Send + Sync + Serialize + DeserializeOwned;
 
-    async fn create_queue(&self, queue_name: QueueName) -> CreateQueueResult;
+    async fn create_queue(
+        &self,
+        queue_name: QueueName,
+    ) -> Result<CreateQueueResult>;
 
-    async fn delete_queue(&self, queue_name: &QueueName) -> DeleteQueueResult;
+    async fn delete_queue(
+        &self,
+        queue_name: &QueueName,
+    ) -> Result<DeleteQueueResult>;
 
     async fn add_consumer(
         &self,
         queue_name: &QueueName,
         consumer: Consumer,
-    ) -> AddConsumerResult;
+    ) -> Result<AddConsumerResult>;
 
     async fn remove_consumer(
         &self,
         queue_name: &QueueName,
         consumer: &Consumer,
-    ) -> RemoveConsumerResult;
+    ) -> Result<RemoveConsumerResult>;
 
     async fn push(
         &self,
         queue_name: &QueueName,
         batch: Payloads,
-    ) -> PushMessagesResult;
+    ) -> Result<PushMessagesResult>;
 
     async fn read(
         &self,
         queue_name: &QueueName,
         consumer: &Consumer,
         number: usize,
-    ) -> ReadMessagesResult<Self::Position>;
+    ) -> Result<ReadMessagesResult<Self::Position>>;
 
     async fn commit(
         &self,
         queue_name: &QueueName,
         consumer: &Consumer,
         position: &Self::Position,
-    ) -> CommitMessagesResult;
+    ) -> Result<CommitMessagesResult>;
 
     async fn take(
         &self,
         queue_name: &QueueName,
         consumer: &Consumer,
         number: usize,
-    ) -> ReadMessagesResult<Self::Position>;
+    ) -> Result<ReadMessagesResult<Self::Position>>;
 
-    async fn collect_garbage(&self);
+    async fn collect_garbage(&self) -> Result<()>;
 
-    async fn queue_names(&self) -> Vec<QueueName>;
+    async fn queue_names(&self) -> Result<Vec<QueueName>>;
 
-    async fn consumers(&self, queue_name: &QueueName) -> GetConsumersResult;
+    async fn consumers(
+        &self,
+        queue_name: &QueueName,
+    ) -> Result<GetConsumersResult>;
 
-    async fn stats(&self, queue_name_prefix: &QueueName) -> Stats;
+    async fn stats(&self, queue_name_prefix: &QueueName) -> Result<Stats>;
 }
 
 mod queue_name {
@@ -73,6 +84,12 @@ mod queue_name {
     impl QueueName {
         pub fn new(name: String) -> Self {
             QueueName(name)
+        }
+    }
+
+    impl AsRef<str> for QueueName {
+        fn as_ref(&self) -> &str {
+            &self.0
         }
     }
 
@@ -152,7 +169,7 @@ pub struct QueueStats {
     size: usize,
     consumers: usize,
     min_unconsumed_size: usize,
-    max_unconsumer_size: usize,
+    max_unconsumed_size: usize,
 }
 
 pub type Stats = HashMap<QueueName, QueueStats>;

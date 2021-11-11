@@ -2,14 +2,17 @@ mod config;
 mod http_api;
 mod queue;
 
-use crate::config::QueueHubType;
+use crate::config::{Config, QueueHubType};
 use crate::http_api::start_http;
-use crate::queue::{in_memory::InMemoryQueueHub, QueueHub};
-use async_std::{io::Result as IoResult, task};
-use std::time::Duration;
+use crate::queue::{
+    in_memory::InMemoryQueueHub, sqlite::SqliteQueueHub, QueueHub,
+};
+use anyhow::Result;
+use async_std::task;
+use std::{future::Future, pin::Pin, time::Duration};
 use tide::log;
 
-async fn garbage_collector<QH>(queue_hub: QH, period: Duration)
+async fn garbage_collector<QH>(queue_hub: QH, period: Duration) -> Result<()>
 where
     QH: QueueHub,
 {
@@ -17,27 +20,49 @@ where
     loop {
         task::sleep(period).await;
         log::info!("Garbage collection");
-        queue_hub.collect_garbage().await;
+        queue_hub.collect_garbage().await?;
     }
 }
 
-async fn setup() -> IoResult<()> {
+fn run_with<QH>(
+    cfg: Config,
+    queue_hub: QH,
+) -> Pin<Box<dyn Future<Output = Result<()>>>>
+where
+    QH: QueueHub,
+{
+    Box::pin(async move {
+        task::spawn(garbage_collector(
+            queue_hub.clone(),
+            cfg.garbage_collection_period,
+        ));
+        start_http(queue_hub.clone(), cfg.http_sock_address)
+            .await
+            .map_err(|e| e.into())
+    })
+}
+
+async fn setup() -> Result<()> {
     let cfg = config::read_config();
 
     tide::log::with_level(cfg.log_level);
 
-    let queue_hub = match cfg.queue_hub_type {
-        QueueHubType::InMemory => InMemoryQueueHub::new(cfg.max_queue_size),
-    };
-
-    task::spawn(garbage_collector(
-        queue_hub.clone(),
-        cfg.garbage_collection_period,
-    ));
-    start_http(queue_hub.clone(), cfg.http_sock_address).await
+    match cfg.queue_hub_type {
+        QueueHubType::InMemory => {
+            let queue_hub = InMemoryQueueHub::new(cfg.max_queue_size);
+            run_with(cfg, queue_hub)
+        }
+        QueueHubType::Sqlite => {
+            let queue_hub =
+                SqliteQueueHub::connect(cfg.database_url.clone()).await?;
+            run_with(cfg, queue_hub)
+        }
+    }
+    .await?;
+    Ok(())
 }
 
-fn main() -> IoResult<()> {
+fn main() -> Result<()> {
     let server = setup();
     task::block_on(server)
 }

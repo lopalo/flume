@@ -1,0 +1,217 @@
+{
+  "db": "SQLite",
+  "057c88a8916ff6e42672f3608c62e8daaf72f35ab23de80fe4790d2261db9493": {
+    "query": "SELECT COUNT(*) FROM messages\n             WHERE queue_id = ? AND id > ? AND id <= ?",
+    "describe": {
+      "columns": [
+        {
+          "name": "COUNT(*)",
+          "ordinal": 0,
+          "type_info": "Int"
+        }
+      ],
+      "parameters": {
+        "Right": 3
+      },
+      "nullable": [
+        false
+      ]
+    }
+  },
+  "1524c957af39a0f551276a607eaef6d357ad3fe6d6f4b7f82b56d7c6824890a2": {
+    "query": "SELECT id FROM queues WHERE name = ?",
+    "describe": {
+      "columns": [
+        {
+          "name": "id",
+          "ordinal": 0,
+          "type_info": "Int64"
+        }
+      ],
+      "parameters": {
+        "Right": 1
+      },
+      "nullable": [
+        false
+      ]
+    }
+  },
+  "27bb34df67768b312c4d7e7b34e82ba2e36ae40ed084f874dcea121bf9cc0889": {
+    "query": "SELECT queue_id, MIN(committed_msg_id) AS min_committed_msg_id\n             FROM consumers GROUP BY queue_id",
+    "describe": {
+      "columns": [
+        {
+          "name": "queue_id",
+          "ordinal": 0,
+          "type_info": "Int64"
+        },
+        {
+          "name": "min_committed_msg_id",
+          "ordinal": 1,
+          "type_info": "Int"
+        }
+      ],
+      "parameters": {
+        "Right": 0
+      },
+      "nullable": [
+        false,
+        null
+      ]
+    }
+  },
+  "36ba87c87eadd9344d7d1579977b9f9eaa990b73048a0102c94638a00bbe58c0": {
+    "query": "SELECT id, committed_msg_id FROM consumers\n                 WHERE queue_id = ? AND consumer = ?",
+    "describe": {
+      "columns": [
+        {
+          "name": "id",
+          "ordinal": 0,
+          "type_info": "Int64"
+        },
+        {
+          "name": "committed_msg_id",
+          "ordinal": 1,
+          "type_info": "Int64"
+        }
+      ],
+      "parameters": {
+        "Right": 2
+      },
+      "nullable": [
+        false,
+        false
+      ]
+    }
+  },
+  "3831750b4921f76ce35fb68175fcbe90c55f9ceea728e72f0d1db400e86f3f98": {
+    "query": "INSERT INTO messages (queue_id, payload) VALUES (?, ?)",
+    "describe": {
+      "columns": [],
+      "parameters": {
+        "Right": 2
+      },
+      "nullable": []
+    }
+  },
+  "4678db8b84f6610a3febc10d4962ebb606ff6e7853ea3269c5ad48f10deb8503": {
+    "query": "DELETE FROM queues where name = ?",
+    "describe": {
+      "columns": [],
+      "parameters": {
+        "Right": 1
+      },
+      "nullable": []
+    }
+  },
+  "610f78a3f7a07998e9e62496c098c18f02987ea59a6a3cce6a894d337bb24d40": {
+    "query": "SELECT name FROM queues",
+    "describe": {
+      "columns": [
+        {
+          "name": "name",
+          "ordinal": 0,
+          "type_info": "Text"
+        }
+      ],
+      "parameters": {
+        "Right": 0
+      },
+      "nullable": [
+        false
+      ]
+    }
+  },
+  "6c7bdecfa4e9f94e78d9afb76407850ca7fcaf253bcdfa5109b0ca639ca30814": {
+    "query": "UPDATE consumers SET committed_msg_id = ? WHERE id = ?",
+    "describe": {
+      "columns": [],
+      "parameters": {
+        "Right": 2
+      },
+      "nullable": []
+    }
+  },
+  "8ade2cd750d6e445f913585b925b63114e515d567b0499d7783759f9967dd23d": {
+    "query": "DELETE FROM consumers where queue_id = ? AND consumer = ?",
+    "describe": {
+      "columns": [],
+      "parameters": {
+        "Right": 2
+      },
+      "nullable": []
+    }
+  },
+  "adf1f3708bb559f20c01d8ecc28c7fc929fbe026dcbd5577d66d89f7a7b3e243": {
+    "query": "DELETE FROM messages WHERE queue_id = ? AND id <= ?",
+    "describe": {
+      "columns": [],
+      "parameters": {
+        "Right": 2
+      },
+      "nullable": []
+    }
+  },
+  "cd268aab40033b012cd20851659587c27b022a5ef830cf8f041ef5cce18b0a78": {
+    "query": "SELECT id, payload FROM messages\n                 WHERE queue_id = ? AND id > ? LIMIT ?",
+    "describe": {
+      "columns": [
+        {
+          "name": "id",
+          "ordinal": 0,
+          "type_info": "Int64"
+        },
+        {
+          "name": "payload",
+          "ordinal": 1,
+          "type_info": "Text"
+        }
+      ],
+      "parameters": {
+        "Right": 3
+      },
+      "nullable": [
+        false,
+        false
+      ]
+    }
+  },
+  "d1aa897a83953abeb54db8474bc6bca8f29c45724a3ea3fe73dbccd15c9ae834": {
+    "query": "SELECT consumer FROM consumers where queue_id = ?",
+    "describe": {
+      "columns": [
+        {
+          "name": "consumer",
+          "ordinal": 0,
+          "type_info": "Text"
+        }
+      ],
+      "parameters": {
+        "Right": 1
+      },
+      "nullable": [
+        false
+      ]
+    }
+  },
+  "d74fb79efb563e1e02a6a4db6fdbf7838a38b6a43eca48f7e2c9ec346a782ad3": {
+    "query": "INSERT INTO queues (name) VALUES (?)",
+    "describe": {
+      "columns": [],
+      "parameters": {
+        "Right": 1
+      },
+      "nullable": []
+    }
+  },
+  "e073e06fa1dc82326f7d01309a8bae79a60aa3f514c5db2acb073b2244995f88": {
+    "query": "INSERT INTO consumers\n             (queue_id, consumer, committed_msg_id) VALUES\n             (?, ?, -1)",
+    "describe": {
+      "columns": [],
+      "parameters": {
+        "Right": 2
+      },
+      "nullable": []
+    }
+  }
+}
