@@ -21,9 +21,15 @@ pub struct SqliteQueueHub {
     pool: SqlitePool,
 }
 
-struct ConsumerRecord {
-    id: i64,
+struct ConsumerMsgId {
+    consumer_id: i64,
     committed_msg_id: i64,
+}
+
+#[derive(FromRow)]
+struct QueueMsgId {
+    queue_id: i64,
+    min_committed_msg_id: i64,
 }
 
 #[derive(FromRow)]
@@ -63,15 +69,15 @@ impl SqliteQueueHub {
         Ok(res)
     }
 
-    async fn get_consumer_record<'a>(
+    async fn get_consumer_msg_id<'a>(
         &self,
         tx: &mut Transaction<'a, Sqlite>,
         queue_id: i64,
         consumer: &Consumer,
-    ) -> Result<Option<ConsumerRecord>> {
+    ) -> Result<Option<ConsumerMsgId>> {
         let res = sqlx::query_as!(
-            ConsumerRecord,
-            "SELECT id, committed_msg_id FROM consumers
+            ConsumerMsgId,
+            "SELECT id AS consumer_id, committed_msg_id FROM consumers
                  WHERE queue_id = ? AND consumer = ?",
             queue_id,
             consumer.0
@@ -228,10 +234,10 @@ impl QueueHub for SqliteQueueHub {
             Some(id) => id,
             None => return Ok(QueueDoesNotExist),
         };
-        let consumer_rec = self
-            .get_consumer_record(&mut tx, queue_id, consumer)
+        let consumer_msg_id = self
+            .get_consumer_msg_id(&mut tx, queue_id, consumer)
             .await?;
-        let committed_msg_id = match consumer_rec {
+        let committed_msg_id = match consumer_msg_id {
             Some(rec) => rec.committed_msg_id,
             None => return Ok(UnknownConsumer),
         };
@@ -270,21 +276,21 @@ impl QueueHub for SqliteQueueHub {
             Some(id) => id,
             None => return Ok(QueueDoesNotExist),
         };
-        let consumer_rec = self
-            .get_consumer_record(&mut tx, queue_id, consumer)
+        let consumer_msg_id = self
+            .get_consumer_msg_id(&mut tx, queue_id, consumer)
             .await?;
-        let consumer_rec = match consumer_rec {
+        let consumer_msg_id = match consumer_msg_id {
             Some(rec) => rec,
             None => return Ok(UnknownConsumer),
         };
-        if position.0 < consumer_rec.committed_msg_id {
+        if position.0 < consumer_msg_id.committed_msg_id {
             return Ok(PositionIsOutOfQueue);
         }
         let committed = sqlx::query_scalar!(
             "SELECT COUNT(*) FROM messages
              WHERE queue_id = ? AND id > ? AND id <= ?",
             queue_id,
-            consumer_rec.committed_msg_id,
+            consumer_msg_id.committed_msg_id,
             position.0
         )
         .fetch_one(&mut tx)
@@ -295,7 +301,7 @@ impl QueueHub for SqliteQueueHub {
         sqlx::query!(
             "UPDATE consumers SET committed_msg_id = ? WHERE id = ?",
             position.0,
-            consumer_rec.id
+            consumer_msg_id.consumer_id
         )
         .execute(&mut tx)
         .await?;
@@ -316,10 +322,10 @@ impl QueueHub for SqliteQueueHub {
             Some(id) => id,
             None => return Ok(QueueDoesNotExist),
         };
-        let consumer_rec = self
-            .get_consumer_record(&mut tx, queue_id, consumer)
+        let consumer_msg_id = self
+            .get_consumer_msg_id(&mut tx, queue_id, consumer)
             .await?;
-        let consumer_rec = match consumer_rec {
+        let consumer_msg_id = match consumer_msg_id {
             Some(rec) => rec,
             None => return Ok(UnknownConsumer),
         };
@@ -329,7 +335,7 @@ impl QueueHub for SqliteQueueHub {
             "SELECT id, payload FROM messages
                  WHERE queue_id = ? AND id > ? LIMIT ?",
             queue_id,
-            consumer_rec.committed_msg_id,
+            consumer_msg_id.committed_msg_id,
             num
         )
         .fetch_all(&mut tx)
@@ -338,7 +344,7 @@ impl QueueHub for SqliteQueueHub {
             sqlx::query!(
                 "UPDATE consumers SET committed_msg_id = ? WHERE id = ?",
                 msg_rec.id,
-                consumer_rec.id
+                consumer_msg_id.consumer_id
             )
             .execute(&mut tx)
             .await?;
@@ -356,7 +362,7 @@ impl QueueHub for SqliteQueueHub {
 
     async fn collect_garbage(&self) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        let records = sqlx::query!(
+        let records = sqlx::query_as::<_, QueueMsgId>(
             "SELECT queue_id, MIN(committed_msg_id) AS min_committed_msg_id
              FROM consumers GROUP BY queue_id",
         )

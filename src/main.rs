@@ -4,9 +4,9 @@ mod queue;
 
 use crate::config::{Config, QueueHubType};
 use crate::http_api::start_http;
-use crate::queue::{
-    in_memory::InMemoryQueueHub, sqlite::SqliteQueueHub, QueueHub,
-};
+#[cfg(feature = "sqlite")]
+use crate::queue::sqlite::SqliteQueueHub;
+use crate::queue::{in_memory::InMemoryQueueHub, QueueHub};
 use anyhow::Result;
 use async_std::task;
 use std::{future::Future, pin::Pin, time::Duration};
@@ -52,6 +52,7 @@ async fn setup() -> Result<()> {
             let queue_hub = InMemoryQueueHub::new(cfg.max_queue_size);
             run_with(cfg, queue_hub)
         }
+        #[cfg(feature = "sqlite")]
         QueueHubType::Sqlite => {
             let queue_hub =
                 SqliteQueueHub::connect(cfg.database_url.clone()).await?;

@@ -36,36 +36,22 @@
       ]
     }
   },
-  "27bb34df67768b312c4d7e7b34e82ba2e36ae40ed084f874dcea121bf9cc0889": {
-    "query": "SELECT queue_id, MIN(committed_msg_id) AS min_committed_msg_id\n             FROM consumers GROUP BY queue_id",
+  "3831750b4921f76ce35fb68175fcbe90c55f9ceea728e72f0d1db400e86f3f98": {
+    "query": "INSERT INTO messages (queue_id, payload) VALUES (?, ?)",
     "describe": {
-      "columns": [
-        {
-          "name": "queue_id",
-          "ordinal": 0,
-          "type_info": "Int64"
-        },
-        {
-          "name": "min_committed_msg_id",
-          "ordinal": 1,
-          "type_info": "Int"
-        }
-      ],
+      "columns": [],
       "parameters": {
-        "Right": 0
+        "Right": 2
       },
-      "nullable": [
-        false,
-        null
-      ]
+      "nullable": []
     }
   },
-  "36ba87c87eadd9344d7d1579977b9f9eaa990b73048a0102c94638a00bbe58c0": {
-    "query": "SELECT id, committed_msg_id FROM consumers\n                 WHERE queue_id = ? AND consumer = ?",
+  "39141acd945f8c63e59248b09064cc385281b7c9fa0cbdeeede77147b98855f8": {
+    "query": "SELECT id AS consumer_id, committed_msg_id FROM consumers\n                 WHERE queue_id = ? AND consumer = ?",
     "describe": {
       "columns": [
         {
-          "name": "id",
+          "name": "consumer_id",
           "ordinal": 0,
           "type_info": "Int64"
         },
@@ -82,16 +68,6 @@
         false,
         false
       ]
-    }
-  },
-  "3831750b4921f76ce35fb68175fcbe90c55f9ceea728e72f0d1db400e86f3f98": {
-    "query": "INSERT INTO messages (queue_id, payload) VALUES (?, ?)",
-    "describe": {
-      "columns": [],
-      "parameters": {
-        "Right": 2
-      },
-      "nullable": []
     }
   },
   "4678db8b84f6610a3febc10d4962ebb606ff6e7853ea3269c5ad48f10deb8503": {

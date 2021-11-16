@@ -1,4 +1,5 @@
 pub mod in_memory;
+#[cfg(feature = "sqlite")]
 pub mod sqlite;
 
 pub use self::queue_name::QueueName;

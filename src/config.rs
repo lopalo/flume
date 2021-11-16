@@ -1,5 +1,6 @@
 use async_std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use dotenv;
+#[cfg(feature = "sqlite")]
 use sqlx::sqlite::SqliteConnectOptions;
 use std::env::{self, VarError};
 use std::process;
@@ -9,6 +10,7 @@ use tide::log::LevelFilter;
 
 pub enum QueueHubType {
     InMemory,
+    #[cfg(feature = "sqlite")]
     Sqlite,
 }
 
@@ -18,6 +20,7 @@ impl FromStr for QueueHubType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match &s.to_lowercase()[..] {
             "in-memory" => Ok(Self::InMemory),
+            #[cfg(feature = "sqlite")]
             "sqlite" => Ok(Self::Sqlite),
             _ => Err(()),
         }
@@ -30,6 +33,7 @@ pub struct Config {
     pub garbage_collection_period: Duration,
     pub queue_hub_type: QueueHubType,
     pub http_sock_address: SocketAddr,
+    #[cfg(feature = "sqlite")]
     pub database_url: SqliteConnectOptions,
 }
 
@@ -51,9 +55,13 @@ pub fn read_config() -> Config {
         30_000,
     ));
 
+    let mut hub_type_options = vec!["in-memory"];
+    if cfg!(feature = "sqlite") {
+        hub_type_options.push("sqlite")
+    }
     let queue_hub_type = parse_env_var(
         "QUEUE_HUB_TYPE",
-        "one of: in-memory",
+        &format!("one of: {}", hub_type_options.join(", ")),
         QueueHubType::InMemory,
     );
 
@@ -63,6 +71,7 @@ pub fn read_config() -> Config {
         SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 8822),
     );
 
+    #[cfg(feature = "sqlite")]
     let database_url = parse_env_var(
         "DATABASE_URL",
         "a valid path to an SQLite database: sqlite://<path>",
@@ -75,6 +84,7 @@ pub fn read_config() -> Config {
         garbage_collection_period,
         queue_hub_type,
         http_sock_address,
+        #[cfg(feature = "sqlite")]
         database_url,
     }
 }
