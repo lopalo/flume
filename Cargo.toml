@@ -3,8 +3,11 @@ name = "flume"
 version = "0.1.0"
 edition = "2018"
 
+[lib]
+doctest = false
+
 [dependencies]
-async-std = "1.10.0"
+async-std = { version = "1.10.0", features = ["attributes"] }
 async-trait = "0.1.51"
 anyhow = "1.0.45"
 tide = "0.16.0"
@@ -15,3 +18,8 @@ sqlx = { version = "0.5.9", features = ["runtime-async-std-rustls", "sqlite", "o
 
 [features]
 sqlite = ["sqlx"]
+
+[dev-dependencies]
+rstest = "0.11.0"
+rand = "0.8.4"
+futures = "0.3.17"

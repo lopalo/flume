@@ -3,8 +3,8 @@ use sqlx::{
     error::DatabaseError,
     migrate::Migrator,
     sqlite::{
-        Sqlite, SqliteConnectOptions, SqliteJournalMode, SqliteLockingMode,
-        SqlitePool, SqliteSynchronous,
+        Sqlite, SqliteConnectOptions, SqliteJournalMode, SqlitePool,
+        SqlitePoolOptions, SqliteSynchronous,
     },
     ConnectOptions, Error, FromRow, Transaction,
 };
@@ -18,7 +18,8 @@ pub struct MsgPk(i64);
 
 #[derive(Clone)]
 pub struct SqliteQueueHub {
-    pool: SqlitePool,
+    write_pool: SqlitePool,
+    read_pool: SqlitePool,
 }
 
 struct ConsumerMsgId {
@@ -45,15 +46,27 @@ impl SqliteQueueHub {
     pub async fn connect(mut options: SqliteConnectOptions) -> Result<Self> {
         options = options
             .create_if_missing(true)
-            .synchronous(SqliteSynchronous::Normal)
-            .locking_mode(SqliteLockingMode::Exclusive)
-            .journal_mode(SqliteJournalMode::Truncate);
+            .foreign_keys(true)
+            .synchronous(SqliteSynchronous::Full)
+            .journal_mode(SqliteJournalMode::Wal);
         options.log_statements(LevelFilter::Debug);
 
-        let pool = SqlitePool::connect_with(options).await?;
+        let write_pool_options = SqlitePoolOptions::new().max_connections(1);
+        let write_pool = write_pool_options
+            .connect_with(options.clone().read_only(false))
+            .await?;
         let m = Migrator::new(Path::new("./migrations")).await?;
-        m.run(&pool).await?;
-        Ok(SqliteQueueHub { pool })
+        m.run(&write_pool).await?;
+
+        let read_pool_options = SqlitePoolOptions::new().max_connections(100);
+        let read_pool = read_pool_options
+            .connect_with(options.read_only(true))
+            .await?;
+
+        Ok(SqliteQueueHub {
+            write_pool,
+            read_pool,
+        })
     }
 
     async fn get_queue_id<'a>(
@@ -98,7 +111,7 @@ impl QueueHub for SqliteQueueHub {
     ) -> Result<CreateQueueResult> {
         use CreateQueueResult::*;
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_pool.begin().await?;
         let name: &str = queue_name.as_ref();
         let res = sqlx::query!("INSERT INTO queues (name) VALUES (?)", name)
             .execute(&mut tx)
@@ -119,7 +132,7 @@ impl QueueHub for SqliteQueueHub {
     ) -> Result<DeleteQueueResult> {
         use DeleteQueueResult::*;
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_pool.begin().await?;
         let name: &str = queue_name.as_ref();
         let res = sqlx::query!("DELETE FROM queues where name = ?", name)
             .execute(&mut tx)
@@ -142,7 +155,7 @@ impl QueueHub for SqliteQueueHub {
     ) -> Result<AddConsumerResult> {
         use AddConsumerResult::*;
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_pool.begin().await?;
         let queue_id = match self.get_queue_id(&mut tx, queue_name).await? {
             Some(id) => id,
             None => return Ok(QueueDoesNotExist),
@@ -173,7 +186,7 @@ impl QueueHub for SqliteQueueHub {
     ) -> Result<RemoveConsumerResult> {
         use RemoveConsumerResult::*;
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_pool.begin().await?;
         let queue_id = match self.get_queue_id(&mut tx, queue_name).await? {
             Some(id) => id,
             None => return Ok(QueueDoesNotExist),
@@ -203,7 +216,7 @@ impl QueueHub for SqliteQueueHub {
     ) -> Result<PushMessagesResult> {
         use PushMessagesResult::*;
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_pool.begin().await?;
         let queue_id = match self.get_queue_id(&mut tx, queue_name).await? {
             Some(id) => id,
             None => return Ok(QueueDoesNotExist),
@@ -229,7 +242,7 @@ impl QueueHub for SqliteQueueHub {
     ) -> Result<ReadMessagesResult<Self::Position>> {
         use ReadMessagesResult::*;
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.read_pool.begin().await?;
         let queue_id = match self.get_queue_id(&mut tx, queue_name).await? {
             Some(id) => id,
             None => return Ok(QueueDoesNotExist),
@@ -271,7 +284,7 @@ impl QueueHub for SqliteQueueHub {
     ) -> Result<CommitMessagesResult> {
         use CommitMessagesResult::*;
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_pool.begin().await?;
         let queue_id = match self.get_queue_id(&mut tx, queue_name).await? {
             Some(id) => id,
             None => return Ok(QueueDoesNotExist),
@@ -317,7 +330,7 @@ impl QueueHub for SqliteQueueHub {
     ) -> Result<ReadMessagesResult<Self::Position>> {
         use ReadMessagesResult::*;
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_pool.begin().await?;
         let queue_id = match self.get_queue_id(&mut tx, queue_name).await? {
             Some(id) => id,
             None => return Ok(QueueDoesNotExist),
@@ -361,7 +374,7 @@ impl QueueHub for SqliteQueueHub {
     }
 
     async fn collect_garbage(&self) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.write_pool.begin().await?;
         let records = sqlx::query_as::<_, QueueMsgId>(
             "SELECT queue_id, MIN(committed_msg_id) AS min_committed_msg_id
              FROM consumers GROUP BY queue_id",
@@ -384,7 +397,7 @@ impl QueueHub for SqliteQueueHub {
     }
 
     async fn queue_names(&self) -> Result<Vec<QueueName>> {
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.read_pool.acquire().await?;
         let res = sqlx::query_scalar!("SELECT name FROM queues")
             .fetch_all(&mut conn)
             .await?;
@@ -398,7 +411,7 @@ impl QueueHub for SqliteQueueHub {
     ) -> Result<GetConsumersResult> {
         use GetConsumersResult::*;
 
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.read_pool.begin().await?;
         let queue_id = match self.get_queue_id(&mut tx, queue_name).await? {
             Some(id) => id,
             None => return Ok(QueueDoesNotExist),
@@ -417,7 +430,7 @@ impl QueueHub for SqliteQueueHub {
 
     async fn stats(&self, queue_name_prefix: &QueueName) -> Result<Stats> {
         let mut res = HashMap::new();
-        let mut conn = self.pool.acquire().await?;
+        let mut conn = self.read_pool.acquire().await?;
         let q_prefix: &str = queue_name_prefix.as_ref();
         let pattern = format!("{}%", q_prefix);
         let records = sqlx::query_as::<_, StatsRecord>(
