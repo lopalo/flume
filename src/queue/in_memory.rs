@@ -2,7 +2,11 @@ use async_std::sync::{Arc, Mutex, RwLock};
 use async_trait::async_trait;
 use patricia_tree::PatriciaMap;
 use serde::{Deserialize, Serialize};
-use std::collections::{hash_map::Entry, HashMap, VecDeque};
+use std::{
+    collections::{hash_map::Entry, HashMap, VecDeque},
+    fmt::{self, Display},
+    result::Result as StdResult,
+};
 
 use super::*;
 
@@ -18,6 +22,19 @@ impl Pos {
         self.0 += n;
     }
 }
+
+#[derive(Debug)]
+pub struct Error;
+
+impl Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "in-memory queue hub error")
+    }
+}
+
+impl StdError for Error {}
+
+type Result<T> = StdResult<T, Error>;
 
 struct Queue {
     next_position: Mutex<Pos>,
@@ -45,6 +62,7 @@ impl InMemoryQueueHub {
 #[async_trait]
 impl QueueHub for InMemoryQueueHub {
     type Position = Pos;
+    type Error = Error;
 
     async fn create_queue(
         &self,

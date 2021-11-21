@@ -1,4 +1,3 @@
-use anyhow::Result;
 use sqlx::{
     error::DatabaseError,
     migrate::Migrator,
@@ -8,13 +7,15 @@ use sqlx::{
     },
     ConnectOptions, Error, FromRow, Transaction,
 };
-use std::{borrow::Borrow, path::Path};
-use tide::log::LevelFilter;
+use std::{borrow::Borrow, path::Path, result::Result as StdResult};
+use log::LevelFilter;
 
 use super::*;
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct MsgPk(i64);
+
+type Result<T> = StdResult<T, Error>;
 
 #[derive(Clone)]
 pub struct SqliteQueueHub {
@@ -104,6 +105,7 @@ impl SqliteQueueHub {
 #[async_trait]
 impl QueueHub for SqliteQueueHub {
     type Position = MsgPk;
+    type Error = Error;
 
     async fn create_queue(
         &self,

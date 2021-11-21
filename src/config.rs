@@ -6,7 +6,7 @@ use std::env::{self, VarError};
 use std::process;
 use std::str::FromStr;
 use std::time::Duration;
-use tide::log::LevelFilter;
+use log::LevelFilter;
 
 pub enum QueueHubType {
     InMemory,

@@ -2,10 +2,9 @@ pub mod in_memory;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
 
-use anyhow::Result;
 use async_trait::async_trait;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
-use std::collections::HashMap;
+use std::{collections::HashMap, error::Error as StdError};
 
 pub type Payloads = Vec<Payload>;
 pub type Messages<Pos> = Vec<Message<Pos>>;
@@ -14,65 +13,70 @@ pub type Messages<Pos> = Vec<Message<Pos>>;
 pub trait QueueHub: Clone + Send + Sync + 'static {
     type Position: Clone + Send + Sync + Serialize + DeserializeOwned;
 
+    type Error: StdError + Send + Sync + 'static;
+
     async fn create_queue(
         &self,
         queue_name: QueueName,
-    ) -> Result<CreateQueueResult>;
+    ) -> Result<CreateQueueResult, Self::Error>;
 
     async fn delete_queue(
         &self,
         queue_name: &QueueName,
-    ) -> Result<DeleteQueueResult>;
+    ) -> Result<DeleteQueueResult, Self::Error>;
 
     async fn add_consumer(
         &self,
         queue_name: &QueueName,
         consumer: Consumer,
-    ) -> Result<AddConsumerResult>;
+    ) -> Result<AddConsumerResult, Self::Error>;
 
     async fn remove_consumer(
         &self,
         queue_name: &QueueName,
         consumer: &Consumer,
-    ) -> Result<RemoveConsumerResult>;
+    ) -> Result<RemoveConsumerResult, Self::Error>;
 
     async fn push(
         &self,
         queue_name: &QueueName,
         batch: Payloads,
-    ) -> Result<PushMessagesResult>;
+    ) -> Result<PushMessagesResult, Self::Error>;
 
     async fn read(
         &self,
         queue_name: &QueueName,
         consumer: &Consumer,
         number: usize,
-    ) -> Result<ReadMessagesResult<Self::Position>>;
+    ) -> Result<ReadMessagesResult<Self::Position>, Self::Error>;
 
     async fn commit(
         &self,
         queue_name: &QueueName,
         consumer: &Consumer,
         position: &Self::Position,
-    ) -> Result<CommitMessagesResult>;
+    ) -> Result<CommitMessagesResult, Self::Error>;
 
     async fn take(
         &self,
         queue_name: &QueueName,
         consumer: &Consumer,
         number: usize,
-    ) -> Result<ReadMessagesResult<Self::Position>>;
+    ) -> Result<ReadMessagesResult<Self::Position>, Self::Error>;
 
-    async fn collect_garbage(&self) -> Result<()>;
+    async fn collect_garbage(&self) -> Result<(), Self::Error>;
 
-    async fn queue_names(&self) -> Result<Vec<QueueName>>;
+    async fn queue_names(&self) -> Result<Vec<QueueName>, Self::Error>;
 
     async fn consumers(
         &self,
         queue_name: &QueueName,
-    ) -> Result<GetConsumersResult>;
+    ) -> Result<GetConsumersResult, Self::Error>;
 
-    async fn stats(&self, queue_name_prefix: &QueueName) -> Result<Stats>;
+    async fn stats(
+        &self,
+        queue_name_prefix: &QueueName,
+    ) -> Result<Stats, Self::Error>;
 }
 
 #[derive(

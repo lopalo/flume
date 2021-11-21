@@ -10,6 +10,8 @@ doctest = false
 async-std = { version = "1.10.0", features = ["attributes"] }
 async-trait = "0.1.51"
 anyhow = "1.0.45"
+log = "0.4.14"
+femme = "2.1.1"
 tide = "0.16.0"
 serde = "1.0.130"
 patricia_tree = "0.3.1"

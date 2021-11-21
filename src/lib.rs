@@ -10,7 +10,6 @@ use crate::queue::{in_memory::InMemoryQueueHub, QueueHub};
 use anyhow::Result;
 use async_std::task;
 use std::{future::Future, pin::Pin, time::Duration};
-use tide::log;
 
 async fn garbage_collector<QH>(queue_hub: QH, period: Duration) -> Result<()>
 where
@@ -20,7 +19,9 @@ where
     loop {
         task::sleep(period).await;
         log::info!("Garbage collection");
-        queue_hub.collect_garbage().await?;
+        if let Err(err) = queue_hub.collect_garbage().await {
+            log::error!("GC failed: {}", err)
+        }
     }
 }
 
@@ -45,7 +46,7 @@ where
 pub async fn setup_server() -> Result<()> {
     let cfg = config::read_config();
 
-    tide::log::with_level(cfg.log_level);
+    femme::with_level(cfg.log_level);
 
     match cfg.queue_hub_type {
         QueueHubType::InMemory => {

@@ -155,56 +155,43 @@ async fn delete_queue<S: QueueHub>(req: Request<S>) -> TResult<StatusCode> {
     }
 }
 
-#[derive(Deserialize)]
-struct AddConsumer {
-    consumer: Consumer,
-}
-
-#[derive(Serialize)]
-#[serde(tag = "status")]
-enum AddConsumerResult {
-    Ok,
-    ConsumerAlreadyAdded,
-}
-
-async fn add_consumer<S: QueueHub>(mut req: Request<S>) -> Resp {
+async fn add_consumer<S: QueueHub>(req: Request<S>) -> Resp {
     use crate::queue::AddConsumerResult::*;
 
     let queue_name = get_queue_name(&req)?;
-    let AddConsumer { consumer } = req.body_form().await?;
+    let consumer = req
+        .param("consumer")
+        .map(str::to_owned)
+        .map(Consumer::new)?;
     let res = req.state().add_consumer(&queue_name, consumer).await?;
-    match res {
-        QueueDoesNotExist => not_found(),
-        ConsumerAlreadyAdded => {
-            json_response(AddConsumerResult::ConsumerAlreadyAdded)
-        }
-        Done => json_response(AddConsumerResult::Ok),
+    Ok(match res {
+        QueueDoesNotExist => Response::builder(StatusCode::NotFound),
+        ConsumerAlreadyAdded => Response::builder(StatusCode::Conflict)
+            .body("consumer already added"),
+        Done => Response::builder(StatusCode::Created),
     }
+    .build())
 }
 
-#[derive(Deserialize)]
-struct RemoveConsumer {
-    consumer: Consumer,
-}
-
-#[derive(Serialize)]
-#[serde(tag = "status")]
-enum RemoveConsumerResult {
-    Ok,
-    UnknownConsumer,
-}
-
-async fn remove_consumer<S: QueueHub>(mut req: Request<S>) -> Resp {
+async fn remove_consumer<S: QueueHub>(req: Request<S>) -> Resp {
     use crate::queue::RemoveConsumerResult::*;
 
     let queue_name = get_queue_name(&req)?;
-    let RemoveConsumer { consumer } = req.body_form().await?;
+    let consumer = req
+        .param("consumer")
+        .map(str::to_owned)
+        .map(Consumer::new)?;
     let res = req.state().remove_consumer(&queue_name, &consumer).await?;
-    match res {
-        QueueDoesNotExist => not_found(),
-        UnknownConsumer => json_response(RemoveConsumerResult::UnknownConsumer),
-        Done => json_response(RemoveConsumerResult::Ok),
+    Ok(match res {
+        QueueDoesNotExist => {
+            Response::builder(StatusCode::NotFound).body("unknown queue")
+        }
+        UnknownConsumer => {
+            Response::builder(StatusCode::NotFound).body("unknown consumer")
+        }
+        Done => Response::builder(StatusCode::Ok),
     }
+    .build())
 }
 
 #[derive(Serialize)]
@@ -239,10 +226,12 @@ fn add_queue_endpoints<S: QueueHub>(mut route: Route<S>) {
     route.at("/create").post(create_queue);
     route.at("/:queue_name").delete(delete_queue);
     route.at("/:queue_name/consumers").get(queue_consumers);
-    route.at("/:queue_name/add_consumer").post(add_consumer);
     route
-        .at("/:queue_name/remove_consumer")
-        .post(remove_consumer);
+        .at("/:queue_name/consumer/:consumer")
+        .put(add_consumer);
+    route
+        .at("/:queue_name/consumer/:consumer")
+        .delete(remove_consumer);
 }
 
 #[derive(Deserialize)]
