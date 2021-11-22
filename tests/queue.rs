@@ -4,7 +4,6 @@ use flume::queue::*;
 use futures::future;
 use rand::{thread_rng, Rng};
 use rstest::rstest;
-use serde::Serialize;
 use sqlx::sqlite::SqliteConnectOptions;
 use std::{
     collections::{HashMap, HashSet},
@@ -21,15 +20,17 @@ fn cons(s: &str) -> Consumer {
     Consumer::new(s.to_owned())
 }
 
-fn pl(s: &str) -> Payload {
-    Payload::new(s.to_owned())
+fn payload<QH: QueueHub>(s: &str) -> Payload<QH::PayloadData> {
+    QH::payload(s.to_owned())
 }
 
-fn payloads<Pos: Serialize>(messages: Messages<Pos>) -> Payloads {
+fn payloads<Pos, Data>(messages: Messages<Pos, Data>) -> Vec<Payload<Data>> {
     messages.into_iter().map(|m| m.payload).collect()
 }
 
-fn extract_payloads<Pos: Serialize>(res: ReadMessagesResult<Pos>) -> Payloads {
+fn extract_payloads<Pos, Data>(
+    res: ReadMessagesResult<Pos, Data>,
+) -> Vec<Payload<Data>> {
     use ReadMessagesResult::*;
     match res {
         Messages(messages) => payloads(messages),
@@ -55,15 +56,16 @@ fn sqlite_qh() -> sqlite::SqliteQueueHub {
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
-async fn two_pushes_one_take(#[case] qh: impl QueueHub) -> Result<()> {
+async fn two_pushes_one_take<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
+    let pl = payload::<QH>;
     let qn = qname("foo");
     let c = cons("alpha");
 
     let res = qh.create_queue(qn.clone()).await?;
     assert_eq!(res, CreateQueueResult::Done);
-    let res = qh.push(&qn, vec![pl("11"), pl("22")]).await?;
+    let res = qh.push(&qn, &[pl("11"), pl("22")]).await?;
     assert_eq!(res, PushMessagesResult::Done);
-    let res = qh.push(&qn, vec![pl("x"), pl("y"), pl("z")]).await?;
+    let res = qh.push(&qn, &[pl("x"), pl("y"), pl("z")]).await?;
     assert_eq!(res, PushMessagesResult::Done);
 
     let res = qh.add_consumer(&qn, c.clone()).await?;
@@ -81,14 +83,15 @@ async fn two_pushes_one_take(#[case] qh: impl QueueHub) -> Result<()> {
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
-async fn one_push_two_takes(#[case] qh: impl QueueHub) -> Result<()> {
+async fn one_push_two_takes<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
+    let pl = payload::<QH>;
     let qn = qname("foo");
     let c = cons("alpha");
 
     let res = qh.create_queue(qn.clone()).await?;
     assert_eq!(res, CreateQueueResult::Done);
     let res = qh
-        .push(&qn, vec![pl("11"), pl("22"), pl("x"), pl("y"), pl("z")])
+        .push(&qn, &[pl("11"), pl("22"), pl("x"), pl("y"), pl("z")])
         .await?;
     assert_eq!(res, PushMessagesResult::Done);
 
@@ -106,7 +109,8 @@ async fn one_push_two_takes(#[case] qh: impl QueueHub) -> Result<()> {
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
-async fn read_and_commit(#[case] qh: impl QueueHub) -> Result<()> {
+async fn read_and_commit<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
+    let pl = payload::<QH>;
     let qn = qname("foo");
     let c = cons("alpha");
 
@@ -115,7 +119,7 @@ async fn read_and_commit(#[case] qh: impl QueueHub) -> Result<()> {
     let res = qh.add_consumer(&qn, c.clone()).await?;
     assert_eq!(res, AddConsumerResult::Done);
     let res = qh
-        .push(&qn, vec![pl("11"), pl("22"), pl("x"), pl("y"), pl("z")])
+        .push(&qn, &[pl("11"), pl("22"), pl("x"), pl("y"), pl("z")])
         .await?;
     assert_eq!(res, PushMessagesResult::Done);
 
@@ -161,7 +165,8 @@ async fn read_and_commit(#[case] qh: impl QueueHub) -> Result<()> {
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
-async fn refill_during_gc(#[case] qh: impl QueueHub) -> Result<()> {
+async fn refill_during_gc<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
+    let pl = payload::<QH>;
     let qn = qname("foo");
     let c = cons("alpha");
 
@@ -170,7 +175,7 @@ async fn refill_during_gc(#[case] qh: impl QueueHub) -> Result<()> {
     let res = qh.add_consumer(&qn, c.clone()).await?;
     assert_eq!(res, AddConsumerResult::Done);
 
-    let res = qh.push(&qn, vec![pl("11"), pl("22")]).await?;
+    let res = qh.push(&qn, &[pl("11"), pl("22")]).await?;
     assert_eq!(res, PushMessagesResult::Done);
 
     let res = qh.take(&qn, &c, 10).await?;
@@ -179,7 +184,7 @@ async fn refill_during_gc(#[case] qh: impl QueueHub) -> Result<()> {
     assert_eq!(extract_payloads(res), vec![]);
 
     qh.collect_garbage().await?;
-    let res = qh.push(&qn, vec![pl("x"), pl("y"), pl("z")]).await?;
+    let res = qh.push(&qn, &[pl("x"), pl("y"), pl("z")]).await?;
     assert_eq!(res, PushMessagesResult::Done);
     qh.collect_garbage().await?;
 
@@ -194,7 +199,8 @@ async fn refill_during_gc(#[case] qh: impl QueueHub) -> Result<()> {
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
-async fn concurrent_push_take(#[case] qh: impl QueueHub) -> Result<()> {
+async fn concurrent_push_take<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
+    let pl = payload::<QH>;
     let qn = qname("foo");
     let c = cons("alpha");
 
@@ -210,9 +216,10 @@ async fn concurrent_push_take(#[case] qh: impl QueueHub) -> Result<()> {
     future::join_all(chunks.iter().map(|&ch| {
         let payloads = ch.to_owned();
         async {
+            let payloads = payloads;
             let mcs = thread_rng().gen_range(0..4);
             task::sleep(Duration::from_micros(mcs)).await;
-            qh.push(&qn, payloads).await
+            qh.push(&qn, &payloads).await
         }
     }))
     .await
@@ -232,7 +239,7 @@ async fn concurrent_push_take(#[case] qh: impl QueueHub) -> Result<()> {
         .map(extract_payloads)
         .collect();
 
-    res.sort();
+    res.sort_by_key(|b| format!("{:?}", b));
     assert_eq!(res, chunks);
 
     Ok(())
@@ -241,7 +248,8 @@ async fn concurrent_push_take(#[case] qh: impl QueueHub) -> Result<()> {
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
-async fn three_consumers_and_gc(#[case] qh: impl QueueHub) -> Result<()> {
+async fn three_consumers_and_gc<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
+    let pl = payload::<QH>;
     let qn = qname("foo");
     let alpha = cons("alpha");
     let beta = cons("beta");
@@ -250,19 +258,19 @@ async fn three_consumers_and_gc(#[case] qh: impl QueueHub) -> Result<()> {
     let res = qh.create_queue(qn.clone()).await?;
     assert_eq!(res, CreateQueueResult::Done);
 
-    let res = qh.push(&qn, vec![pl("x"), pl("y"), pl("z")]).await?;
+    let res = qh.push(&qn, &[pl("x"), pl("y"), pl("z")]).await?;
     assert_eq!(res, PushMessagesResult::Done);
     let res = qh.add_consumer(&qn, alpha.clone()).await?;
     assert_eq!(res, AddConsumerResult::Done);
 
-    let res = qh.push(&qn, vec![pl("1"), pl("2")]).await?;
+    let res = qh.push(&qn, &[pl("1"), pl("2")]).await?;
     assert_eq!(res, PushMessagesResult::Done);
     let res = qh.add_consumer(&qn, beta.clone()).await?;
     assert_eq!(res, AddConsumerResult::Done);
     let res = qh.take(&qn, &alpha, 2).await?;
     assert_eq!(extract_payloads(res), vec![pl("x"), pl("y")]);
 
-    let res = qh.push(&qn, vec![pl("3"), pl("4")]).await?;
+    let res = qh.push(&qn, &[pl("3"), pl("4")]).await?;
     assert_eq!(res, PushMessagesResult::Done);
     let res = qh.add_consumer(&qn, gamma.clone()).await?;
     assert_eq!(res, AddConsumerResult::Done);
@@ -358,7 +366,8 @@ async fn three_consumers_and_gc(#[case] qh: impl QueueHub) -> Result<()> {
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
-async fn two_queues(#[case] qh: impl QueueHub) -> Result<()> {
+async fn two_queues<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
+    let pl = payload::<QH>;
     let foo_q = qname("foo");
     let bar_q = qname("bar");
     let alpha = cons("alpha");
@@ -368,7 +377,7 @@ async fn two_queues(#[case] qh: impl QueueHub) -> Result<()> {
     let res = qh.create_queue(foo_q.clone()).await?;
     assert_eq!(res, CreateQueueResult::Done);
 
-    let res = qh.push(&foo_q, vec![pl("x"), pl("y"), pl("z")]).await?;
+    let res = qh.push(&foo_q, &[pl("x"), pl("y"), pl("z")]).await?;
     assert_eq!(res, PushMessagesResult::Done);
     let res = qh.add_consumer(&foo_q, alpha.clone()).await?;
     assert_eq!(res, AddConsumerResult::Done);
@@ -377,7 +386,7 @@ async fn two_queues(#[case] qh: impl QueueHub) -> Result<()> {
     assert_eq!(res, CreateQueueResult::Done);
     let res = qh.add_consumer(&bar_q, alpha.clone()).await?;
     assert_eq!(res, AddConsumerResult::Done);
-    let res = qh.push(&bar_q, vec![pl("11"), pl("22"), pl("33")]).await?;
+    let res = qh.push(&bar_q, &[pl("11"), pl("22"), pl("33")]).await?;
     assert_eq!(res, PushMessagesResult::Done);
     let res = qh.add_consumer(&bar_q, gamma.clone()).await?;
     assert_eq!(res, AddConsumerResult::Done);
@@ -520,7 +529,7 @@ async fn two_queues(#[case] qh: impl QueueHub) -> Result<()> {
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
-async fn call_results(#[case] qh: impl QueueHub) -> Result<()> {
+async fn call_results<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
     let qn = qname("foo");
     let c = cons("bar");
 
@@ -528,7 +537,7 @@ async fn call_results(#[case] qh: impl QueueHub) -> Result<()> {
     assert_eq!(res, DeleteQueueResult::QueueDoesNotExist);
     let res = qh.add_consumer(&qn, c.clone()).await?;
     assert_eq!(res, AddConsumerResult::QueueDoesNotExist);
-    let res = qh.push(&qn, vec![]).await?;
+    let res = qh.push(&qn, &[]).await?;
     assert_eq!(res, PushMessagesResult::QueueDoesNotExist);
     let res = qh.read(&qn, &c, 3).await?;
     if let ReadMessagesResult::QueueDoesNotExist = res {

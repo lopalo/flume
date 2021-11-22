@@ -1,12 +1,12 @@
 use async_std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use dotenv;
+use log::LevelFilter;
 #[cfg(feature = "sqlite")]
 use sqlx::sqlite::SqliteConnectOptions;
 use std::env::{self, VarError};
 use std::process;
 use std::str::FromStr;
 use std::time::Duration;
-use log::LevelFilter;
 
 pub enum QueueHubType {
     InMemory,

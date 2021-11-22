@@ -1,3 +1,4 @@
+use log::LevelFilter;
 use sqlx::{
     error::DatabaseError,
     migrate::Migrator,
@@ -8,7 +9,6 @@ use sqlx::{
     ConnectOptions, Error, FromRow, Transaction,
 };
 use std::{borrow::Borrow, path::Path, result::Result as StdResult};
-use log::LevelFilter;
 
 use super::*;
 
@@ -105,7 +105,12 @@ impl SqliteQueueHub {
 #[async_trait]
 impl QueueHub for SqliteQueueHub {
     type Position = MsgPk;
+    type PayloadData = String;
     type Error = Error;
+
+    fn payload(data: String) -> Payload<Self::PayloadData> {
+        Payload::new(data)
+    }
 
     async fn create_queue(
         &self,
@@ -214,7 +219,7 @@ impl QueueHub for SqliteQueueHub {
     async fn push(
         &self,
         queue_name: &QueueName,
-        batch: Payloads,
+        batch: &[Payload<Self::PayloadData>],
     ) -> Result<PushMessagesResult> {
         use PushMessagesResult::*;
 
@@ -241,7 +246,7 @@ impl QueueHub for SqliteQueueHub {
         queue_name: &QueueName,
         consumer: &Consumer,
         number: usize,
-    ) -> Result<ReadMessagesResult<Self::Position>> {
+    ) -> Result<ReadMessagesResult<Self::Position, Self::PayloadData>> {
         use ReadMessagesResult::*;
 
         let mut tx = self.read_pool.begin().await?;
@@ -329,7 +334,7 @@ impl QueueHub for SqliteQueueHub {
         queue_name: &QueueName,
         consumer: &Consumer,
         number: usize,
-    ) -> Result<ReadMessagesResult<Self::Position>> {
+    ) -> Result<ReadMessagesResult<Self::Position, Self::PayloadData>> {
         use ReadMessagesResult::*;
 
         let mut tx = self.write_pool.begin().await?;

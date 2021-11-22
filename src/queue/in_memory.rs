@@ -38,7 +38,7 @@ type Result<T> = StdResult<T, Error>;
 
 struct Queue {
     next_position: Mutex<Pos>,
-    messages: RwLock<VecDeque<Message<Pos>>>,
+    messages: RwLock<VecDeque<Message<Pos, Arc<String>>>>,
     consumers: RwLock<HashMap<Consumer, Mutex<Pos>>>,
 }
 
@@ -62,7 +62,12 @@ impl InMemoryQueueHub {
 #[async_trait]
 impl QueueHub for InMemoryQueueHub {
     type Position = Pos;
+    type PayloadData = Arc<String>;
     type Error = Error;
+
+    fn payload(data: String) -> Payload<Self::PayloadData> {
+        Payload::new(Arc::new(data))
+    }
 
     async fn create_queue(
         &self,
@@ -147,7 +152,7 @@ impl QueueHub for InMemoryQueueHub {
     async fn push(
         &self,
         queue_name: &QueueName,
-        batch: Payloads,
+        batch: &[Payload<Self::PayloadData>],
     ) -> Result<PushMessagesResult> {
         use PushMessagesResult::*;
 
@@ -160,7 +165,10 @@ impl QueueHub for InMemoryQueueHub {
                     messages.extend(batch.into_iter().map(|payload| {
                         let position = next_position.clone();
                         next_position.incr();
-                        Message { position, payload }
+                        Message {
+                            position,
+                            payload: payload.clone(),
+                        }
                     }));
                     Done
                 } else {
@@ -176,7 +184,7 @@ impl QueueHub for InMemoryQueueHub {
         queue_name: &QueueName,
         consumer: &Consumer,
         number: usize,
-    ) -> Result<ReadMessagesResult<Self::Position>> {
+    ) -> Result<ReadMessagesResult<Self::Position, Self::PayloadData>> {
         use ReadMessagesResult::*;
 
         let qs = self.queues.read().await;
@@ -253,7 +261,7 @@ impl QueueHub for InMemoryQueueHub {
         queue_name: &QueueName,
         consumer: &Consumer,
         number: usize,
-    ) -> Result<ReadMessagesResult<Self::Position>> {
+    ) -> Result<ReadMessagesResult<Self::Position, Self::PayloadData>> {
         use ReadMessagesResult::*;
 
         let qs = self.queues.read().await;

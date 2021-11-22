@@ -1,4 +1,4 @@
-use crate::queue::{self, Consumer, Messages, Payloads, QueueHub, QueueName};
+use crate::queue::{self, Consumer, Messages, Payload, QueueHub, QueueName};
 use async_std::{io::Result as IoResult, net::SocketAddr};
 use serde::{Deserialize, Serialize};
 use tide::{Body, Request, Response, Result as TResult, Route, StatusCode};
@@ -6,8 +6,8 @@ use tide::{Body, Request, Response, Result as TResult, Route, StatusCode};
 type Resp = TResult<Response>;
 
 #[derive(Deserialize)]
-struct PushMessages {
-    batch: Payloads,
+struct PushMessages<Data> {
+    batch: Vec<Payload<Data>>,
 }
 
 #[derive(Serialize)]
@@ -22,7 +22,7 @@ async fn push_messages<S: QueueHub>(mut req: Request<S>) -> Resp {
 
     let queue_name = get_queue_name(&req)?;
     let PushMessages { batch } = req.body_json().await?;
-    match req.state().push(&queue_name, batch).await? {
+    match req.state().push(&queue_name, &batch).await? {
         QueueDoesNotExist => not_found(),
         Done => json_response(PushMessagesResponse::Ok),
         NoSpaceInQueue => json_response(PushMessagesResponse::NotEnoughSpace),
@@ -37,11 +37,8 @@ struct ReadMessages {
 
 #[derive(Serialize)]
 #[serde(tag = "status")]
-enum ReadMessagesResponse<Pos>
-where
-    Pos: Serialize,
-{
-    Messages { batch: Messages<Pos> },
+enum ReadMessagesResponse<Pos, Data> {
+    Messages { batch: Messages<Pos, Data> },
     UnknownConsumer,
 }
 
@@ -52,9 +49,9 @@ async fn read_messages<S: QueueHub>(req: Request<S>) -> Resp {
     let ReadMessages { consumer, number } = req.query()?;
     match req.state().read(&queue_name, &consumer, number).await? {
         QueueDoesNotExist => not_found(),
-        UnknownConsumer => {
-            json_response(ReadMessagesResponse::UnknownConsumer::<S::Position>)
-        }
+        UnknownConsumer => json_response(
+            ReadMessagesResponse::UnknownConsumer::<S::Position, S::PayloadData>,
+        ),
 
         Messages(batch) => {
             json_response(ReadMessagesResponse::Messages { batch })
@@ -107,9 +104,9 @@ async fn take_messages<S: QueueHub>(mut req: Request<S>) -> Resp {
     let ReadMessages { consumer, number } = req.body_form().await?;
     match req.state().take(&queue_name, &consumer, number).await? {
         QueueDoesNotExist => not_found(),
-        UnknownConsumer => {
-            json_response(ReadMessagesResponse::UnknownConsumer::<S::Position>)
-        }
+        UnknownConsumer => json_response(
+            ReadMessagesResponse::UnknownConsumer::<S::Position, S::PayloadData>,
+        ),
 
         Messages(batch) => {
             json_response(ReadMessagesResponse::Messages { batch })
