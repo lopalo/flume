@@ -20,17 +20,17 @@ fn cons(s: &str) -> Consumer {
     Consumer::new(s.to_owned())
 }
 
-fn payload<QH: QueueHub>(s: &str) -> Payload<QH::PayloadData> {
+fn payload<QH: QueueHub>(s: &str) -> Payload<QH> {
     QH::payload(s.to_owned())
 }
 
-fn payloads<Pos, Data>(messages: Messages<Pos, Data>) -> Vec<Payload<Data>> {
+fn payloads<QH: QueueHub>(messages: Messages<QH>) -> Vec<Payload<QH>> {
     messages.into_iter().map(|m| m.payload).collect()
 }
 
-fn extract_payloads<Pos, Data>(
-    res: ReadMessagesResult<Pos, Data>,
-) -> Vec<Payload<Data>> {
+fn extract_payloads<QH: QueueHub>(
+    res: ReadMessagesResult<QH>,
+) -> Vec<Payload<QH>> {
     use ReadMessagesResult::*;
     match res {
         Messages(messages) => payloads(messages),

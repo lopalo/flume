@@ -1,9 +1,11 @@
+mod broadcaster;
 mod config;
 mod http_api;
 pub mod queue;
 
+use crate::broadcaster::Broadcaster;
 use crate::config::{Config, QueueHubType};
-use crate::http_api::start_http;
+use crate::http_api::{start_http, State as HttpState};
 #[cfg(feature = "sqlite")]
 use crate::queue::sqlite::SqliteQueueHub;
 use crate::queue::{in_memory::InMemoryQueueHub, QueueHub};
@@ -25,6 +27,8 @@ where
     }
 }
 
+//TODO: graceful shutdown of QueueHub and Broadcaster
+//TODO: limit allocated resources: batch size, message length, etc.
 fn run_with<QH>(
     cfg: Config,
     queue_hub: QH,
@@ -32,12 +36,17 @@ fn run_with<QH>(
 where
     QH: QueueHub,
 {
+    let broadcaster = Broadcaster::new();
+    let http_state = HttpState::new(queue_hub.clone(), broadcaster.clone());
     Box::pin(async move {
+        for queue_name in queue_hub.queue_names().await? {
+            broadcaster.create_channel(queue_name).await
+        }
         task::spawn(garbage_collector(
-            queue_hub.clone(),
+            queue_hub,
             cfg.garbage_collection_period,
         ));
-        start_http(queue_hub.clone(), cfg.http_sock_address)
+        start_http(http_state, cfg.http_sock_address)
             .await
             .map_err(|e| e.into())
     })

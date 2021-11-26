@@ -3,10 +3,11 @@ pub mod in_memory;
 pub mod sqlite;
 
 use async_trait::async_trait;
+use derivative::*;
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{collections::HashMap, error::Error as StdError, fmt::Debug};
 
-pub type Messages<Pos, Data> = Vec<Message<Pos, Data>>;
+pub type Messages<QH> = Vec<Message<QH>>;
 
 #[async_trait]
 pub trait QueueHub: Clone + Send + Sync + 'static {
@@ -21,7 +22,7 @@ pub trait QueueHub: Clone + Send + Sync + 'static {
         + DeserializeOwned;
     type Error: StdError + Send + Sync + 'static;
 
-    fn payload(data: String) -> Payload<Self::PayloadData>;
+    fn payload(data: String) -> Payload<Self>;
 
     async fn create_queue(
         &self,
@@ -48,7 +49,7 @@ pub trait QueueHub: Clone + Send + Sync + 'static {
     async fn push(
         &self,
         queue_name: &QueueName,
-        batch: &[Payload<Self::PayloadData>],
+        batch: &[Payload<Self>],
     ) -> Result<PushMessagesResult, Self::Error>;
 
     async fn read(
@@ -56,10 +57,7 @@ pub trait QueueHub: Clone + Send + Sync + 'static {
         queue_name: &QueueName,
         consumer: &Consumer,
         number: usize,
-    ) -> Result<
-        ReadMessagesResult<Self::Position, Self::PayloadData>,
-        Self::Error,
-    >;
+    ) -> Result<ReadMessagesResult<Self>, Self::Error>;
 
     async fn commit(
         &self,
@@ -73,10 +71,7 @@ pub trait QueueHub: Clone + Send + Sync + 'static {
         queue_name: &QueueName,
         consumer: &Consumer,
         number: usize,
-    ) -> Result<
-        ReadMessagesResult<Self::Position, Self::PayloadData>,
-        Self::Error,
-    >;
+    ) -> Result<ReadMessagesResult<Self>, Self::Error>;
 
     async fn collect_garbage(&self) -> Result<(), Self::Error>;
 
@@ -125,19 +120,21 @@ impl Consumer {
     }
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Serialize, Deserialize)]
-pub struct Payload<Data>(Data);
+#[derive(Clone, Serialize, Deserialize, Derivative)]
+#[derivative(Debug(bound = ""), PartialEq(bound = ""), Eq(bound = ""))]
+pub struct Payload<QH: QueueHub>(QH::PayloadData);
 
-impl<Data> Payload<Data> {
-    pub fn new(data: Data) -> Self {
+impl<QH: QueueHub> Payload<QH> {
+    pub fn new(data: QH::PayloadData) -> Self {
         Self(data)
     }
 }
 
-#[derive(Clone, Serialize, Debug)]
-pub struct Message<Pos, Data> {
-    pub position: Pos,
-    pub payload: Payload<Data>,
+#[derive(Clone, Serialize)]
+#[serde(bound = "")]
+pub struct Message<QH: QueueHub> {
+    pub position: QH::Position,
+    pub payload: Payload<QH>,
 }
 
 #[derive(PartialEq, Eq, Debug)]
@@ -173,8 +170,8 @@ pub enum PushMessagesResult {
     QueueDoesNotExist,
 }
 
-pub enum ReadMessagesResult<Pos, Data> {
-    Messages(Messages<Pos, Data>),
+pub enum ReadMessagesResult<QH: QueueHub> {
+    Messages(Messages<QH>),
     QueueDoesNotExist,
     UnknownConsumer,
 }

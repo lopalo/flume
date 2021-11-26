@@ -38,7 +38,7 @@ type Result<T> = StdResult<T, Error>;
 
 struct Queue {
     next_position: Mutex<Pos>,
-    messages: RwLock<VecDeque<Message<Pos, Arc<String>>>>,
+    messages: RwLock<VecDeque<Message<InMemoryQueueHub>>>,
     consumers: RwLock<HashMap<Consumer, Mutex<Pos>>>,
 }
 
@@ -65,7 +65,7 @@ impl QueueHub for InMemoryQueueHub {
     type PayloadData = Arc<String>;
     type Error = Error;
 
-    fn payload(data: String) -> Payload<Self::PayloadData> {
+    fn payload(data: String) -> Payload<Self> {
         Payload::new(Arc::new(data))
     }
 
@@ -152,7 +152,7 @@ impl QueueHub for InMemoryQueueHub {
     async fn push(
         &self,
         queue_name: &QueueName,
-        batch: &[Payload<Self::PayloadData>],
+        batch: &[Payload<Self>],
     ) -> Result<PushMessagesResult> {
         use PushMessagesResult::*;
 
@@ -184,7 +184,7 @@ impl QueueHub for InMemoryQueueHub {
         queue_name: &QueueName,
         consumer: &Consumer,
         number: usize,
-    ) -> Result<ReadMessagesResult<Self::Position, Self::PayloadData>> {
+    ) -> Result<ReadMessagesResult<Self>> {
         use ReadMessagesResult::*;
 
         let qs = self.queues.read().await;
@@ -261,7 +261,7 @@ impl QueueHub for InMemoryQueueHub {
         queue_name: &QueueName,
         consumer: &Consumer,
         number: usize,
-    ) -> Result<ReadMessagesResult<Self::Position, Self::PayloadData>> {
+    ) -> Result<ReadMessagesResult<Self>> {
         use ReadMessagesResult::*;
 
         let qs = self.queues.read().await;

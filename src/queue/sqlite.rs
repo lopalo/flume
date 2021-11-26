@@ -17,7 +17,7 @@ pub struct MsgPk(i64);
 
 type Result<T> = StdResult<T, Error>;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SqliteQueueHub {
     write_pool: SqlitePool,
     read_pool: SqlitePool,
@@ -108,7 +108,7 @@ impl QueueHub for SqliteQueueHub {
     type PayloadData = String;
     type Error = Error;
 
-    fn payload(data: String) -> Payload<Self::PayloadData> {
+    fn payload(data: String) -> Payload<Self> {
         Payload::new(data)
     }
 
@@ -219,7 +219,7 @@ impl QueueHub for SqliteQueueHub {
     async fn push(
         &self,
         queue_name: &QueueName,
-        batch: &[Payload<Self::PayloadData>],
+        batch: &[Payload<Self>],
     ) -> Result<PushMessagesResult> {
         use PushMessagesResult::*;
 
@@ -246,7 +246,7 @@ impl QueueHub for SqliteQueueHub {
         queue_name: &QueueName,
         consumer: &Consumer,
         number: usize,
-    ) -> Result<ReadMessagesResult<Self::Position, Self::PayloadData>> {
+    ) -> Result<ReadMessagesResult<Self>> {
         use ReadMessagesResult::*;
 
         let mut tx = self.read_pool.begin().await?;
@@ -334,7 +334,7 @@ impl QueueHub for SqliteQueueHub {
         queue_name: &QueueName,
         consumer: &Consumer,
         number: usize,
-    ) -> Result<ReadMessagesResult<Self::Position, Self::PayloadData>> {
+    ) -> Result<ReadMessagesResult<Self>> {
         use ReadMessagesResult::*;
 
         let mut tx = self.write_pool.begin().await?;
