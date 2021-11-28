@@ -35,6 +35,8 @@ pub struct Config {
     pub http_sock_address: SocketAddr,
     #[cfg(feature = "sqlite")]
     pub database_url: SqliteConnectOptions,
+    pub listener_channel_size: usize,
+    pub listener_heartbeat_period: Duration,
 }
 
 pub fn read_config() -> Config {
@@ -78,6 +80,15 @@ pub fn read_config() -> Config {
         SqliteConnectOptions::new().filename("sqlite://db/queue_hub.db"),
     );
 
+    let listener_channel_size =
+        parse_env_var("LISTENER_CHANNEL_SIZE", "a positive number", 1_000);
+
+    let listener_heartbeat_period = Duration::from_millis(parse_env_var(
+        "LISTENER_HEARTBEAT_PERIOD_MS",
+        "a positive number in milliseconds",
+        30_000,
+    ));
+
     Config {
         log_level,
         max_queue_size,
@@ -86,6 +97,8 @@ pub fn read_config() -> Config {
         http_sock_address,
         #[cfg(feature = "sqlite")]
         database_url,
+        listener_channel_size,
+        listener_heartbeat_period,
     }
 }
 

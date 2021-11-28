@@ -153,7 +153,7 @@ impl QueueHub for InMemoryQueueHub {
         &self,
         queue_name: &QueueName,
         batch: &[Payload<Self>],
-    ) -> Result<PushMessagesResult> {
+    ) -> Result<PushMessagesResult<Self>> {
         use PushMessagesResult::*;
 
         let qs = self.queues.read().await;
@@ -162,15 +162,17 @@ impl QueueHub for InMemoryQueueHub {
                 let mut next_position = q.next_position.lock().await;
                 let mut messages = q.messages.write().await;
                 if messages.len() + batch.len() <= self.max_queue_size {
+                    let mut positions = Vec::with_capacity(batch.len());
                     messages.extend(batch.into_iter().map(|payload| {
                         let position = next_position.clone();
                         next_position.incr();
+                        positions.push(position.clone());
                         Message {
                             position,
                             payload: payload.clone(),
                         }
                     }));
-                    Done
+                    Done(positions)
                 } else {
                     NoSpaceInQueue
                 }

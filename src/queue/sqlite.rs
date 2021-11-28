@@ -220,7 +220,7 @@ impl QueueHub for SqliteQueueHub {
         &self,
         queue_name: &QueueName,
         batch: &[Payload<Self>],
-    ) -> Result<PushMessagesResult> {
+    ) -> Result<PushMessagesResult<Self>> {
         use PushMessagesResult::*;
 
         let mut tx = self.write_pool.begin().await?;
@@ -228,17 +228,19 @@ impl QueueHub for SqliteQueueHub {
             Some(id) => id,
             None => return Ok(QueueDoesNotExist),
         };
+        let mut positions = Vec::with_capacity(batch.len());
         for payload in batch {
-            sqlx::query!(
-                "INSERT INTO messages (queue_id, payload) VALUES (?, ?)",
-                queue_id,
-                payload.0
+            let id = sqlx::query_scalar(
+                "INSERT INTO messages (queue_id, payload) VALUES (?, ?) RETURNING id",
             )
-            .execute(&mut tx)
+            .bind(queue_id)
+            .bind(&payload.0)
+            .fetch_one(&mut tx)
             .await?;
+            positions.push(MsgPk(id))
         }
         tx.commit().await?;
-        Ok(Done)
+        Ok(Done(positions))
     }
 
     async fn read(

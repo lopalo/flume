@@ -36,7 +36,10 @@ fn run_with<QH>(
 where
     QH: QueueHub,
 {
-    let broadcaster = Broadcaster::new();
+    let broadcaster = Broadcaster::new(
+        cfg.listener_channel_size,
+        cfg.listener_heartbeat_period,
+    );
     let http_state = HttpState::new(queue_hub.clone(), broadcaster.clone());
     Box::pin(async move {
         for queue_name in queue_hub.queue_names().await? {

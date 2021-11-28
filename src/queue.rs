@@ -50,7 +50,7 @@ pub trait QueueHub: Clone + Send + Sync + 'static {
         &self,
         queue_name: &QueueName,
         batch: &[Payload<Self>],
-    ) -> Result<PushMessagesResult, Self::Error>;
+    ) -> Result<PushMessagesResult<Self>, Self::Error>;
 
     async fn read(
         &self,
@@ -164,8 +164,8 @@ pub enum RemoveConsumerResult {
 }
 
 #[derive(PartialEq, Eq, Debug)]
-pub enum PushMessagesResult {
-    Done,
+pub enum PushMessagesResult<QH: QueueHub> {
+    Done(Vec<QH::Position>),
     NoSpaceInQueue,
     QueueDoesNotExist,
 }

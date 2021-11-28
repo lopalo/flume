@@ -4,7 +4,7 @@ use async_std::{
     sync::{Arc, RwLock},
     task,
 };
-use futures::{select, FutureExt, StreamExt};
+use futures::{select, Future, FutureExt, StreamExt};
 use std::{
     collections::HashMap,
     sync::atomic::{AtomicUsize, Ordering},
@@ -13,6 +13,7 @@ use std::{
 use tide::sse::Sender as SseSender;
 
 struct Message {
+    id: String,
     payload: String,
 }
 
@@ -32,10 +33,10 @@ pub struct Broadcaster {
 }
 
 impl Broadcaster {
-    pub fn new() -> Self {
-        //TODO: read from config
-        let listener_channel_size = 100;
-        let heartbeat_period = Duration::from_secs(5);
+    pub fn new(
+        listener_channel_size: usize,
+        heartbeat_period: Duration,
+    ) -> Self {
         Self {
             listener_channel_size,
             heartbeat_period,
@@ -75,7 +76,7 @@ impl Broadcaster {
             let res = select! {
                 msg = receiver.next().fuse() => match msg {
                     Some(msg) =>
-                        sse.send("message", &msg.payload, None).await,
+                        sse.send("message", &msg.payload, Some(&msg.id)).await,
                     None => break
                 },
                 _ = task::sleep(*heartbeat_period).fuse() => {
@@ -96,33 +97,46 @@ impl Broadcaster {
         };
     }
 
-    pub async fn publish<QH: QueueHub>(
+    pub async fn publish<'a, QH, It, Res, Fut>(
         &self,
         queue_name: &QueueName,
-        payload: &Payload<QH>,
-    ) {
-        let msg = Arc::new(Message {
-            payload: serde_json::to_string(payload).unwrap(),
-        });
+        fut: Fut,
+    ) -> Result<Res, QH::Error>
+    where
+        QH: QueueHub,
+        It: Iterator<Item = (QH::Position, &'a Payload<QH>)>,
+        Fut: Future<Output = Result<(It, Res), QH::Error>>,
+    {
         if let Some(channel) = self.channels.read().await.get(queue_name) {
-            let mut closed_listeners = vec![];
-            for (listener_id, listener) in channel.read().await.iter() {
-                match listener.try_send(Arc::clone(&msg)) {
-                    Ok(()) => (),
-                    Err(TrySendError::Full(_)) => log::trace!(
-                        "SSE connection '{}' is congested",
-                        listener_id.0
-                    ),
-                    Err(TrySendError::Closed(_)) => {
-                        closed_listeners.push(*listener_id)
-                    }
-                };
-            }
             let mut channel = channel.write().await;
-            for listener_id in closed_listeners.iter() {
-                channel.remove(listener_id);
-                log::debug!("Removed SSE connection: {}", listener_id.0);
+            //the future is run with an exclusive access to the channel
+            let (for_publishing, res) = fut.await?;
+            for (position, payload) in for_publishing {
+                let msg = Arc::new(Message {
+                    id: serde_json::to_string(&position).unwrap(),
+                    payload: serde_json::to_string(payload).unwrap(),
+                });
+                let mut closed_listeners = vec![];
+                for (listener_id, listener) in channel.iter() {
+                    match listener.try_send(Arc::clone(&msg)) {
+                        Ok(()) => (),
+                        Err(TrySendError::Full(_)) => log::trace!(
+                            "SSE connection '{}' is congested",
+                            listener_id.0
+                        ),
+                        Err(TrySendError::Closed(_)) => {
+                            closed_listeners.push(*listener_id)
+                        }
+                    };
+                }
+                for listener_id in closed_listeners.iter() {
+                    channel.remove(listener_id);
+                    log::debug!("Removed SSE connection: {}", listener_id.0);
+                }
             }
-        };
+            Ok(res)
+        } else {
+            Ok(fut.await?.1)
+        }
     }
 }

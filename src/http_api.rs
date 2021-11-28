@@ -49,16 +49,22 @@ async fn push_messages<QH: QueueHub>(mut req: Req<QH>) -> Resp {
         queue_hub,
         broadcaster,
     } = req.state();
-    match queue_hub.push(&queue_name, &batch).await? {
-        QueueDoesNotExist => not_found(),
-        Done => {
-            for payload in batch {
-                broadcaster.publish(&queue_name, &payload).await
-            }
-            json_response(PushMessagesResponse::Ok)
-        }
-        NoSpaceInQueue => json_response(PushMessagesResponse::NotEnoughSpace),
-    }
+    broadcaster
+        .publish(&queue_name, async {
+            let mut batch_positions = vec![];
+            let res = match queue_hub.push(&queue_name, &batch).await? {
+                QueueDoesNotExist => not_found(),
+                Done(positions) => {
+                    batch_positions = positions;
+                    json_response(PushMessagesResponse::Ok)
+                }
+                NoSpaceInQueue => {
+                    json_response(PushMessagesResponse::NotEnoughSpace)
+                }
+            };
+            Ok((batch_positions.into_iter().zip(&batch), res))
+        })
+        .await?
 }
 
 #[derive(Deserialize)]
