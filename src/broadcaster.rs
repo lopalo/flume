@@ -7,6 +7,7 @@ use async_std::{
 use futures::{select, Future, FutureExt, StreamExt};
 use std::{
     collections::HashMap,
+    pin::Pin,
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
@@ -97,6 +98,7 @@ impl Broadcaster {
         };
     }
 
+    #[allow(dead_code)]
     pub async fn publish<'a, QH, It, Res, Fut>(
         &self,
         queue_name: &QueueName,
@@ -109,34 +111,74 @@ impl Broadcaster {
     {
         if let Some(channel) = self.channels.read().await.get(queue_name) {
             let mut channel = channel.write().await;
+            let mut publisher = ChannelPublisher::new(&mut channel);
             //the future is run with an exclusive access to the channel
             let (for_publishing, res) = fut.await?;
             for (position, payload) in for_publishing {
-                let msg = Arc::new(Message {
-                    id: serde_json::to_string(&position).unwrap(),
-                    payload: serde_json::to_string(payload).unwrap(),
-                });
-                let mut closed_listeners = vec![];
-                for (listener_id, listener) in channel.iter() {
-                    match listener.try_send(Arc::clone(&msg)) {
-                        Ok(()) => (),
-                        Err(TrySendError::Full(_)) => log::trace!(
-                            "SSE connection '{}' is congested",
-                            listener_id.0
-                        ),
-                        Err(TrySendError::Closed(_)) => {
-                            closed_listeners.push(*listener_id)
-                        }
-                    };
-                }
-                for listener_id in closed_listeners.iter() {
-                    channel.remove(listener_id);
-                    log::debug!("Removed SSE connection: {}", listener_id.0);
-                }
+                publisher.publish(&position, payload)
             }
             Ok(res)
         } else {
             Ok(fut.await?.1)
+        }
+    }
+
+    pub async fn with_publisher<Res, Fun>(
+        &self,
+        queue_name: &QueueName,
+        f: Fun,
+    ) -> Res
+    where
+        Fun: for<'a> FnOnce(
+            ChannelPublisher<'a>,
+        )
+            -> Pin<Box<dyn Future<Output = Res> + Send + 'a>>,
+    {
+        if let Some(channel) = self.channels.read().await.get(queue_name) {
+            //the callback is provided with an exclusive access to the channel
+            let mut channel = channel.write().await;
+            f(ChannelPublisher::new(&mut channel)).await
+        } else {
+            f(ChannelPublisher::new(&mut HashMap::new())).await
+        }
+    }
+}
+
+pub struct ChannelPublisher<'a> {
+    channel: &'a mut Listeners,
+}
+
+impl<'a> ChannelPublisher<'a> {
+    fn new(channel: &'a mut Listeners) -> Self {
+        Self { channel }
+    }
+
+    pub fn publish<QH: QueueHub>(
+        &mut self,
+        position: &QH::Position,
+        payload: &Payload<QH>,
+    ) {
+        let channel = &mut self.channel;
+        let msg = Arc::new(Message {
+            id: serde_json::to_string(&position).unwrap(),
+            payload: serde_json::to_string(payload).unwrap(),
+        });
+        let mut closed_listeners = vec![];
+        for (listener_id, listener) in channel.iter() {
+            match listener.try_send(Arc::clone(&msg)) {
+                Ok(()) => (),
+                Err(TrySendError::Full(_)) => log::trace!(
+                    "SSE connection '{}' is congested",
+                    listener_id.0
+                ),
+                Err(TrySendError::Closed(_)) => {
+                    closed_listeners.push(*listener_id)
+                }
+            };
+        }
+        for listener_id in closed_listeners.iter() {
+            channel.remove(listener_id);
+            log::debug!("Removed SSE connection: {}", listener_id.0);
         }
     }
 }

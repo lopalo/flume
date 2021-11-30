@@ -50,21 +50,24 @@ async fn push_messages<QH: QueueHub>(mut req: Req<QH>) -> Resp {
         broadcaster,
     } = req.state();
     broadcaster
-        .publish(&queue_name, async {
-            let mut batch_positions = vec![];
-            let res = match queue_hub.push(&queue_name, &batch).await? {
-                QueueDoesNotExist => not_found(),
-                Done(positions) => {
-                    batch_positions = positions;
-                    json_response(PushMessagesResponse::Ok)
+        .with_publisher(&queue_name.clone(), |mut publisher| {
+            let queue_hub = queue_hub.clone();
+            Box::pin(async move {
+                match queue_hub.push(&queue_name, &batch).await? {
+                    QueueDoesNotExist => not_found(),
+                    Done(positions) => {
+                        for (position, payload) in positions.iter().zip(batch) {
+                            publisher.publish(position, &payload)
+                        }
+                        json_response(PushMessagesResponse::Ok)
+                    }
+                    NoSpaceInQueue => {
+                        json_response(PushMessagesResponse::NotEnoughSpace)
+                    }
                 }
-                NoSpaceInQueue => {
-                    json_response(PushMessagesResponse::NotEnoughSpace)
-                }
-            };
-            Ok((batch_positions.into_iter().zip(&batch), res))
+            })
         })
-        .await?
+        .await
 }
 
 #[derive(Deserialize)]
