@@ -53,7 +53,7 @@ fn in_memory_qh() -> in_memory::InMemoryQueueHub {
 
 fn sqlite_qh() -> sqlite::SqliteQueueHub {
     let mut db_path = env::temp_dir();
-    db_path.push("flume_integration_test");
+    db_path.push("flume_integration_test_sqlite");
     fs::create_dir_all(&db_path).unwrap();
     db_path.push(format!("{}.db", thread_rng().gen::<u128>()));
     let url = format!("sqlite://{}", db_path.to_str().unwrap());
@@ -61,9 +61,18 @@ fn sqlite_qh() -> sqlite::SqliteQueueHub {
     task::block_on(sqlite::SqliteQueueHub::connect(conn_opts)).unwrap()
 }
 
+fn aof_qh() -> aof::AofQueueHub {
+    let mut data_path = env::temp_dir();
+    data_path.push("flume_integration_test_aof");
+    data_path.push(format!("data_{}", thread_rng().gen::<u128>()));
+    fs::create_dir_all(&data_path).unwrap();
+    task::block_on(aof::AofQueueHub::load(data_path.into())).unwrap()
+}
+
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
+#[case::aof(aof_qh())]
 async fn two_pushes_one_take<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
     let pl = payload::<QH>;
     let qn = qname("foo");
@@ -91,6 +100,7 @@ async fn two_pushes_one_take<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
+#[case::aof(aof_qh())]
 async fn one_push_two_takes<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
     let pl = payload::<QH>;
     let qn = qname("foo");
@@ -205,6 +215,7 @@ async fn refill_during_gc<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
+#[case::aof(aof_qh())]
 async fn concurrent_push_take<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
     let pl = payload::<QH>;
     let qn = qname("foo");

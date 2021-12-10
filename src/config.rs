@@ -1,4 +1,7 @@
-use async_std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use async_std::{
+    net::{IpAddr, Ipv4Addr, SocketAddr},
+    path::PathBuf,
+};
 use dotenv;
 use log::LevelFilter;
 #[cfg(feature = "sqlite")]
@@ -10,6 +13,7 @@ use std::time::Duration;
 
 pub enum QueueHubType {
     InMemory,
+    AppendOnlyFile,
     #[cfg(feature = "sqlite")]
     Sqlite,
 }
@@ -20,6 +24,7 @@ impl FromStr for QueueHubType {
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match &s.to_lowercase()[..] {
             "in-memory" => Ok(Self::InMemory),
+            "append-only-file" => Ok(Self::AppendOnlyFile),
             #[cfg(feature = "sqlite")]
             "sqlite" => Ok(Self::Sqlite),
             _ => Err(()),
@@ -30,6 +35,7 @@ impl FromStr for QueueHubType {
 pub struct Config {
     pub log_level: LevelFilter,
     pub max_queue_size: usize,
+    pub data_directory: PathBuf,
     pub garbage_collection_period: Duration,
     pub queue_hub_type: QueueHubType,
     pub http_sock_address: SocketAddr,
@@ -51,13 +57,19 @@ pub fn read_config() -> Config {
     let max_queue_size =
         parse_env_var("MAX_QUEUE_SIZE", "a positive number", 10_000);
 
+    let data_directory = parse_env_var(
+        "DATA_DIRECTORY",
+        "a path to a directory with queues' data",
+        PathBuf::from_str("data").unwrap()
+    );
+
     let garbage_collection_period = Duration::from_millis(parse_env_var(
         "GARBAGE_COLLECTION_PERIOD_MS",
         "a positive number in milliseconds",
         30_000,
     ));
 
-    let mut hub_type_options = vec!["in-memory"];
+    let mut hub_type_options = vec!["in-memory", "append-only-file"];
     if cfg!(feature = "sqlite") {
         hub_type_options.push("sqlite")
     }
@@ -92,6 +104,7 @@ pub fn read_config() -> Config {
     Config {
         log_level,
         max_queue_size,
+        data_directory,
         garbage_collection_period,
         queue_hub_type,
         http_sock_address,

@@ -64,7 +64,7 @@ impl SqliteQueueHub {
             .connect_with(options.read_only(true))
             .await?;
 
-        Ok(SqliteQueueHub {
+        Ok(Self {
             write_pool,
             read_pool,
         })

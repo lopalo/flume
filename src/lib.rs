@@ -3,12 +3,14 @@ mod config;
 mod http_api;
 pub mod queue;
 
-use crate::broadcaster::Broadcaster;
-use crate::config::{Config, QueueHubType};
-use crate::http_api::{start_http, State as HttpState};
 #[cfg(feature = "sqlite")]
 use crate::queue::sqlite::SqliteQueueHub;
-use crate::queue::{in_memory::InMemoryQueueHub, QueueHub};
+use crate::{
+    broadcaster::Broadcaster,
+    config::{Config, QueueHubType},
+    http_api::{start_http, State as HttpState},
+    queue::{aof::AofQueueHub, in_memory::InMemoryQueueHub, QueueHub},
+};
 use anyhow::Result;
 use async_std::task;
 use std::{future::Future, pin::Pin, time::Duration};
@@ -63,6 +65,11 @@ pub async fn setup_server() -> Result<()> {
     match cfg.queue_hub_type {
         QueueHubType::InMemory => {
             let queue_hub = InMemoryQueueHub::new(cfg.max_queue_size);
+            run_with(cfg, queue_hub)
+        }
+        QueueHubType::AppendOnlyFile => {
+            let queue_hub =
+                AofQueueHub::load(cfg.data_directory.clone()).await?;
             run_with(cfg, queue_hub)
         }
         #[cfg(feature = "sqlite")]

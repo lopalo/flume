@@ -1,6 +1,7 @@
 pub mod in_memory;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
+pub mod aof;
 
 use async_trait::async_trait;
 use derivative::*;
