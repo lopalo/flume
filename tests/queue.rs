@@ -127,6 +127,7 @@ async fn one_push_two_takes<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
+#[case::aof(aof_qh())]
 async fn read_and_commit<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
     let pl = payload::<QH>;
     let qn = qname("foo");
@@ -183,6 +184,7 @@ async fn read_and_commit<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
+#[case::aof(aof_qh())]
 async fn refill_during_gc<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
     let pl = payload::<QH>;
     let qn = qname("foo");

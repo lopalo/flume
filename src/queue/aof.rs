@@ -15,13 +15,13 @@ use std::{
 
 use super::*;
 
-#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 struct SegmentIdx(u64);
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 struct MessageIdx(u64);
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Location {
     segment_idx: SegmentIdx,
     message_idx: MessageIdx,
@@ -106,7 +106,6 @@ impl AofQueueHub {
             Self::index_data_files(queue_dir, idx, open_opts).await?;
         let message_quantity =
             (index_file.metadata().await?.len() / INDEX_ITEM_SIZE) as usize;
-        let data_offset = data_file.metadata().await?.len();
         Ok(ReadSegment {
             idx: SegmentIdx(0),
             message_quantity,
@@ -151,7 +150,7 @@ impl AofQueueHub {
 
     async fn read_messages_from_segment(
         segment: &mut ReadSegment,
-        start_message_idx: MessageIdx,
+        start_message_idx: &MessageIdx,
         mut number: usize,
     ) -> Result<Messages<Self>> {
         let is_segment_beginning = start_message_idx.0 == 0;
@@ -184,6 +183,7 @@ impl AofQueueHub {
         data_file.seek(SeekFrom::Start(data_offset)).await?;
         let mut data_reader = BufReader::new(data_file);
         let mut batch = Vec::with_capacity(number);
+        let mut message_idx = start_message_idx.clone();
         for payload_offset in offsets {
             let len = (payload_offset - data_offset) as usize;
             data_offset = payload_offset;
@@ -191,14 +191,14 @@ impl AofQueueHub {
             //TODO: break the loop on ErrorKind::UnexpectedEof?
             data_reader.read_exact(&mut buf[..]).await?;
             let payload = String::from_utf8(buf).unwrap();
-            //TODO: generate correct MessageIdx
             batch.push(Message {
                 position: Location {
                     segment_idx: segment_idx.clone(),
-                    message_idx: MessageIdx(0),
+                    message_idx: message_idx.clone(),
                 },
                 payload: Payload(payload),
-            })
+            });
+            message_idx.0 += 1;
         }
         Ok(batch)
     }
@@ -360,7 +360,29 @@ impl QueueHub for AofQueueHub {
         consumer: &Consumer,
         number: usize,
     ) -> Result<ReadMessagesResult<Self>> {
-        unimplemented!()
+        use ReadMessagesResult::*;
+
+        let qs = self.queues.read().await;
+        Ok(match qs.get(queue_name) {
+            Some(q) => {
+                let mut segment = q.read_segments.front().unwrap().lock().await;
+                let consumers = q.consumers.read().await;
+                match consumers.get(consumer) {
+                    Some(location) => {
+                        let loc = location.write().await;
+                        let batch = Self::read_messages_from_segment(
+                            &mut segment,
+                            &loc.message_idx,
+                            number,
+                        )
+                        .await?;
+                        Messages(batch)
+                    }
+                    None => UnknownConsumer,
+                }
+            }
+            None => QueueDoesNotExist,
+        })
     }
 
     async fn commit(
@@ -369,14 +391,47 @@ impl QueueHub for AofQueueHub {
         consumer: &Consumer,
         position: &Self::Position,
     ) -> Result<CommitMessagesResult> {
-        unimplemented!()
+        use CommitMessagesResult::*;
+
+        let qs = self.queues.read().await;
+        Ok(match qs.get(queue_name) {
+            Some(q) => {
+                let segment = q.read_segments.front().unwrap().lock().await;
+                let consumers = q.consumers.read().await;
+                match consumers.get(consumer) {
+                    Some(pos_lock) => {
+                        let mut pos_guard = pos_lock.write().await;
+                        let consumer_pos = &mut *pos_guard;
+                        if position < consumer_pos {
+                            return Ok(PositionIsOutOfQueue);
+                        }
+                        if position.segment_idx != segment.idx {
+                            return Ok(PositionIsOutOfQueue);
+                        }
+                        if position.message_idx.0
+                            >= segment.message_quantity as u64
+                        {
+                            return Ok(PositionIsOutOfQueue);
+                        }
+                        let prev_pos = consumer_pos.clone();
+                        *consumer_pos = position.clone();
+                        consumer_pos.message_idx.0 += 1;
+                        let committed =
+                            consumer_pos.message_idx.0 - prev_pos.message_idx.0;
+                        Committed(committed as usize)
+                    }
+                    None => UnknownConsumer,
+                }
+            }
+            None => QueueDoesNotExist,
+        })
     }
 
     async fn take(
         &self,
         queue_name: &QueueName,
         consumer: &Consumer,
-        mut number: usize,
+        number: usize,
     ) -> Result<ReadMessagesResult<Self>> {
         use ReadMessagesResult::*;
 
@@ -390,7 +445,7 @@ impl QueueHub for AofQueueHub {
                         let mut loc = location.write().await;
                         let batch = Self::read_messages_from_segment(
                             &mut segment,
-                            loc.message_idx.clone(),
+                            &loc.message_idx,
                             number,
                         )
                         .await?;
@@ -405,7 +460,7 @@ impl QueueHub for AofQueueHub {
     }
 
     async fn collect_garbage(&self) -> Result<()> {
-        //TODO: there must be at least one segment in each queue
+        //TODO: there must be at least one read segment in each queue
         Ok(())
     }
 
