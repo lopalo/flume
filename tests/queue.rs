@@ -61,18 +61,19 @@ fn sqlite_qh() -> sqlite::SqliteQueueHub {
     task::block_on(sqlite::SqliteQueueHub::connect(conn_opts)).unwrap()
 }
 
-fn aof_qh() -> aof::AofQueueHub {
+fn aof_qh(bytes_per_segment: u64) -> aof::AofQueueHub {
     let mut data_path = env::temp_dir();
     data_path.push("flume_integration_test_aof");
     data_path.push(format!("data_{}", thread_rng().gen::<u128>()));
     fs::create_dir_all(&data_path).unwrap();
-    task::block_on(aof::AofQueueHub::load(data_path.into())).unwrap()
+    task::block_on(aof::AofQueueHub::load(data_path.into(), bytes_per_segment)).unwrap()
 }
 
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
-#[case::aof(aof_qh())]
+#[case::aof(aof_qh(3))]
+#[case::aof(aof_qh(100))]
 async fn two_pushes_one_take<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
     let pl = payload::<QH>;
     let qn = qname("foo");
@@ -97,10 +98,45 @@ async fn two_pushes_one_take<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
     Ok(())
 }
 
+
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
-#[case::aof(aof_qh())]
+#[case::aof(aof_qh(6))]
+#[case::aof(aof_qh(100))]
+async fn three_pushes_two_takes<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
+    let pl = payload::<QH>;
+    let qn = qname("foo");
+    let c = cons("alpha");
+
+    let res = qh.create_queue(qn.clone()).await?;
+    assert_eq!(res, CreateQueueResult::Done);
+    let res = qh.push(&qn, &[pl("1111"), pl("2222")]).await?;
+    assert!(push_is_ok(res));
+    let res = qh.push(&qn, &[pl("xxxxxxxxxx")]).await?;
+    assert!(push_is_ok(res));
+    let res = qh.push(&qn, &[pl("yy"), pl("zzz"), pl("www")]).await?;
+    assert!(push_is_ok(res));
+
+    let res = qh.add_consumer(&qn, c.clone()).await?;
+    assert_eq!(res, AddConsumerResult::Done);
+    let res = qh.take(&qn, &c, 5).await?;
+    assert_eq!(
+        extract_payloads(res),
+        vec![pl("1111"), pl("2222"), pl("xxxxxxxxxx"), pl("yy"), pl("zzz")]
+    );
+    let res = qh.take(&qn, &c, 100).await?;
+    assert_eq!(extract_payloads(res), vec![pl("www")]);
+    let res = qh.take(&qn, &c, 100).await?;
+    assert_eq!(extract_payloads(res), vec![]);
+    Ok(())
+}
+
+#[rstest]
+#[case::in_memory(in_memory_qh())]
+#[case::sqlite(sqlite_qh())]
+#[case::aof(aof_qh(3))]
+#[case::aof(aof_qh(100))]
 async fn one_push_two_takes<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
     let pl = payload::<QH>;
     let qn = qname("foo");
@@ -127,7 +163,8 @@ async fn one_push_two_takes<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
-#[case::aof(aof_qh())]
+#[case::aof(aof_qh(3))]
+#[case::aof(aof_qh(100))]
 async fn read_and_commit<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
     let pl = payload::<QH>;
     let qn = qname("foo");
@@ -184,7 +221,8 @@ async fn read_and_commit<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
-#[case::aof(aof_qh())]
+#[case::aof(aof_qh(3))]
+#[case::aof(aof_qh(100))]
 async fn refill_during_gc<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
     let pl = payload::<QH>;
     let qn = qname("foo");
@@ -217,7 +255,8 @@ async fn refill_during_gc<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
-#[case::aof(aof_qh())]
+#[case::aof(aof_qh(3))]
+#[case::aof(aof_qh(20))]
 async fn concurrent_push_take<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
     let pl = payload::<QH>;
     let qn = qname("foo");

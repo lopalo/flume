@@ -68,8 +68,11 @@ pub async fn setup_server() -> Result<()> {
             run_with(cfg, queue_hub)
         }
         QueueHubType::AppendOnlyFile => {
-            let queue_hub =
-                AofQueueHub::load(cfg.data_directory.clone()).await?;
+            let queue_hub = AofQueueHub::load(
+                cfg.data_directory.clone(),
+                cfg.bytes_per_segment,
+            )
+            .await?;
             run_with(cfg, queue_hub)
         }
         #[cfg(feature = "sqlite")]

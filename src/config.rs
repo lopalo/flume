@@ -36,6 +36,7 @@ pub struct Config {
     pub log_level: LevelFilter,
     pub max_queue_size: usize,
     pub data_directory: PathBuf,
+    pub bytes_per_segment: u64,
     pub garbage_collection_period: Duration,
     pub queue_hub_type: QueueHubType,
     pub http_sock_address: SocketAddr,
@@ -60,7 +61,13 @@ pub fn read_config() -> Config {
     let data_directory = parse_env_var(
         "DATA_DIRECTORY",
         "a path to a directory with queues' data",
-        PathBuf::from_str("data").unwrap()
+        PathBuf::from_str("data").unwrap(),
+    );
+
+    let bytes_per_segment = parse_env_var(
+        "BYTES_PER_SEGMENT",
+        "a positive number of bytes",
+        536_870_912,
     );
 
     let garbage_collection_period = Duration::from_millis(parse_env_var(
@@ -105,6 +112,7 @@ pub fn read_config() -> Config {
         log_level,
         max_queue_size,
         data_directory,
+        bytes_per_segment,
         garbage_collection_period,
         queue_hub_type,
         http_sock_address,

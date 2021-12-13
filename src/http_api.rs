@@ -198,6 +198,7 @@ async fn create_queue<QH: QueueHub>(mut req: Req<QH>) -> Resp {
         queue_hub,
         broadcaster,
     } = req.state();
+    //TODO: queue_name must be alphanumeric with underscores
     let res = queue_hub.create_queue(queue_name.clone()).await?;
     Ok(match res {
         Done => {
@@ -237,6 +238,7 @@ async fn add_consumer<QH: QueueHub>(req: Req<QH>) -> Resp {
         .param("consumer")
         .map(str::to_owned)
         .map(Consumer::new)?;
+    //TODO: consumer must be alphanumeric with underscores
     let res = req
         .state()
         .queue_hub

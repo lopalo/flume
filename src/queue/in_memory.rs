@@ -203,10 +203,10 @@ impl QueueHub for InMemoryQueueHub {
         Ok(match qs.get(queue_name) {
             Some(q) => {
                 let consumers = q.consumers.read().await;
-                let messages = &q.store.read().await.messages;
                 match consumers.get(consumer) {
                     Some(pos_lock) => {
                         let start_pos = pos_lock.read().await;
+                        let messages = &q.store.read().await.messages;
                         let batch =
                             Self::read_messages(&messages, &start_pos, number)
                                 .await;
@@ -231,13 +231,13 @@ impl QueueHub for InMemoryQueueHub {
         Ok(match qs.get(queue_name) {
             Some(q) => {
                 let consumers = q.consumers.read().await;
-                let messages = &q.store.read().await.messages;
                 match consumers.get(consumer) {
                     Some(pos_lock) => {
                         let mut consumer_pos = pos_lock.write().await;
                         if *position < *consumer_pos {
                             return Ok(PositionIsOutOfQueue);
                         }
+                        let messages = &q.store.read().await.messages;
                         let idx = messages
                             .binary_search_by_key(position, |m| {
                                 m.position.clone()
@@ -275,10 +275,10 @@ impl QueueHub for InMemoryQueueHub {
         Ok(match qs.get(queue_name) {
             Some(q) => {
                 let consumers = q.consumers.read().await;
-                let messages = &q.store.read().await.messages;
                 match consumers.get(consumer) {
                     Some(pos_lock) => {
                         let mut pos = pos_lock.write().await;
+                        let messages = &q.store.read().await.messages;
                         let batch =
                             Self::read_messages(&messages, &pos, number).await;
                         if let Some(last_msg) = batch.last() {
@@ -297,15 +297,14 @@ impl QueueHub for InMemoryQueueHub {
     async fn collect_garbage(&self) -> Result<()> {
         for queue in self.queues.read().await.values() {
             let consumers = queue.consumers.read().await;
-            let mut store = queue.store.write().await;
-            let mut min_pos = store.next_position.clone();
-            let messages = &mut store.messages;
             if consumers.is_empty() {
                 continue;
             };
+            let mut min_pos = Pos(usize::MAX);
             for consumer_pos in consumers.values() {
                 min_pos = min_pos.min(consumer_pos.read().await.clone());
             }
+            let messages = &mut queue.store.write().await.messages;
             let start_idx =
                 messages.binary_search_by_key(&min_pos, |m| m.position.clone());
             let idx = match start_idx {
@@ -347,16 +346,18 @@ impl QueueHub for InMemoryQueueHub {
         let qs = self.queues.read().await;
         let q_names = qs.iter_prefix(queue_name_prefix.as_ref());
         for (queue_name, queue) in q_names {
-            let consumers = queue.consumers.read().await;
             let store = queue.store.read().await;
             let last_pos = store.next_position.0;
-            let messages = &store.messages;
-            let first_pos =
-                messages.front().map(|m| m.position.0).unwrap_or(last_pos);
-            let size = messages.len();
+            let first_pos = store
+                .messages
+                .front()
+                .map(|m| m.position.0)
+                .unwrap_or(last_pos);
+            let size = store.messages.len();
+            drop(store);
             let mut min_consumer_pos = last_pos;
             let mut max_consumer_pos = first_pos;
-            drop(messages);
+            let consumers = queue.consumers.read().await;
             for consumer_pos in consumers.values() {
                 let mut consumer_pos = consumer_pos.read().await.0;
                 consumer_pos = consumer_pos.max(first_pos);
