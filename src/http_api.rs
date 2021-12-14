@@ -198,7 +198,11 @@ async fn create_queue<QH: QueueHub>(mut req: Req<QH>) -> Resp {
         queue_hub,
         broadcaster,
     } = req.state();
-    //TODO: queue_name must be alphanumeric with underscores
+    if !queue_name.is_valid() {
+        let mut resp = Response::new(StatusCode::BadRequest);
+        resp.set_body("invalid queue name");
+        return Ok(resp);
+    }
     let res = queue_hub.create_queue(queue_name.clone()).await?;
     Ok(match res {
         Done => {
@@ -238,7 +242,11 @@ async fn add_consumer<QH: QueueHub>(req: Req<QH>) -> Resp {
         .param("consumer")
         .map(str::to_owned)
         .map(Consumer::new)?;
-    //TODO: consumer must be alphanumeric with underscores
+    if !consumer.is_valid() {
+        let mut resp = Response::new(StatusCode::BadRequest);
+        resp.set_body("invalid consumer name");
+        return Ok(resp);
+    }
     let res = req
         .state()
         .queue_hub

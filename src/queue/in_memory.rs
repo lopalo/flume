@@ -346,6 +346,11 @@ impl QueueHub for InMemoryQueueHub {
         let qs = self.queues.read().await;
         let q_names = qs.iter_prefix(queue_name_prefix.as_ref());
         for (queue_name, queue) in q_names {
+            let consumers = queue.consumers.read().await;
+            let mut consumer_positions = vec![];
+            for consumer_pos in consumers.values() {
+                consumer_positions.push(consumer_pos.read().await.0);
+            }
             let store = queue.store.read().await;
             let last_pos = store.next_position.0;
             let first_pos = store
@@ -354,12 +359,9 @@ impl QueueHub for InMemoryQueueHub {
                 .map(|m| m.position.0)
                 .unwrap_or(last_pos);
             let size = store.messages.len();
-            drop(store);
             let mut min_consumer_pos = last_pos;
             let mut max_consumer_pos = first_pos;
-            let consumers = queue.consumers.read().await;
-            for consumer_pos in consumers.values() {
-                let mut consumer_pos = consumer_pos.read().await.0;
+            for mut consumer_pos in consumer_positions {
                 consumer_pos = consumer_pos.max(first_pos);
                 min_consumer_pos = min_consumer_pos.min(consumer_pos);
                 max_consumer_pos = max_consumer_pos.max(consumer_pos);

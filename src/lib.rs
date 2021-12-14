@@ -29,7 +29,7 @@ where
     }
 }
 
-//TODO: graceful shutdown of QueueHub and Broadcaster
+//TODO: graceful shutdown of QueueHub on SIGTERM and SIGINT
 //TODO: limit allocated resources: batch size, message length, etc.
 fn run_with<QH>(
     cfg: Config,

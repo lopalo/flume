@@ -1,7 +1,7 @@
+pub mod aof;
 pub mod in_memory;
 #[cfg(feature = "sqlite")]
 pub mod sqlite;
-pub mod aof;
 
 use async_trait::async_trait;
 use derivative::*;
@@ -89,6 +89,16 @@ pub trait QueueHub: Clone + Send + Sync + 'static {
     ) -> Result<Stats, Self::Error>;
 }
 
+fn is_valid_name(name: &str) -> bool {
+    for c in name.chars() {
+        if c == '_' || c.is_ascii_alphanumeric() {
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
 #[derive(
     PartialEq, Eq, Hash, Default, Clone, Debug, Serialize, Deserialize,
 )]
@@ -97,6 +107,10 @@ pub struct QueueName(String);
 impl QueueName {
     pub fn new(name: String) -> Self {
         QueueName(name)
+    }
+
+    pub fn is_valid(&self) -> bool {
+        return is_valid_name(&self.0);
     }
 }
 
@@ -118,6 +132,10 @@ pub struct Consumer(String);
 impl Consumer {
     pub fn new(consumer: String) -> Self {
         Self(consumer)
+    }
+
+    pub fn is_valid(&self) -> bool {
+        return is_valid_name(&self.0);
     }
 }
 
