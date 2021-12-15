@@ -37,6 +37,7 @@ pub struct Config {
     pub max_queue_size: usize,
     pub data_directory: PathBuf,
     pub bytes_per_segment: u64,
+    pub opened_files_per_segment: usize,
     pub garbage_collection_period: Duration,
     pub queue_hub_type: QueueHubType,
     pub http_sock_address: SocketAddr,
@@ -69,6 +70,9 @@ pub fn read_config() -> Config {
         "a positive number of bytes",
         536_870_912,
     );
+
+    let opened_files_per_segment =
+        parse_env_var("OPENED_FILES_PER_SEGMENT", "a positive number", 10);
 
     let garbage_collection_period = Duration::from_millis(parse_env_var(
         "GARBAGE_COLLECTION_PERIOD_MS",
@@ -113,6 +117,7 @@ pub fn read_config() -> Config {
         max_queue_size,
         data_directory,
         bytes_per_segment,
+        opened_files_per_segment,
         garbage_collection_period,
         queue_hub_type,
         http_sock_address,

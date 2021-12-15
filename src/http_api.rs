@@ -54,7 +54,7 @@ async fn push_messages<QH: QueueHub>(mut req: Req<QH>) -> Resp {
             let queue_hub = queue_hub.clone();
             Box::pin(async move {
                 match queue_hub.push(&queue_name, &batch).await? {
-                    QueueDoesNotExist => not_found(),
+                    QueueDoesNotExist => queue_not_found(),
                     Done(positions) => {
                         for (position, payload) in positions.iter().zip(batch) {
                             publisher.publish(position, &payload)
@@ -94,7 +94,7 @@ async fn read_messages<QH: QueueHub>(req: Req<QH>) -> Resp {
         .read(&queue_name, &consumer, number)
         .await?
     {
-        QueueDoesNotExist => not_found(),
+        QueueDoesNotExist => queue_not_found(),
         UnknownConsumer => {
             json_response(ReadMessagesResponse::UnknownConsumer::<QH>)
         }
@@ -131,7 +131,7 @@ async fn commit_messages<QH: QueueHub>(mut req: Req<QH>) -> Resp {
         .commit(&queue_name, &consumer, &position)
         .await?
     {
-        QueueDoesNotExist => not_found(),
+        QueueDoesNotExist => queue_not_found(),
         UnknownConsumer => {
             json_response(CommitMessagesResponse::UnknownConsumer)
         }
@@ -155,7 +155,7 @@ async fn take_messages<QH: QueueHub>(mut req: Req<QH>) -> Resp {
         .take(&queue_name, &consumer, number)
         .await?
     {
-        QueueDoesNotExist => not_found(),
+        QueueDoesNotExist => queue_not_found(),
         UnknownConsumer => {
             json_response(ReadMessagesResponse::UnknownConsumer::<QH>)
         }
@@ -204,19 +204,18 @@ async fn create_queue<QH: QueueHub>(mut req: Req<QH>) -> Resp {
         return Ok(resp);
     }
     let res = queue_hub.create_queue(queue_name.clone()).await?;
-    Ok(match res {
+    match res {
         Done => {
             broadcaster.create_channel(queue_name).await;
-            Response::builder(StatusCode::Created)
+            response(StatusCode::Created, "")
         }
         QueueAlreadyExists => {
-            Response::builder(StatusCode::Conflict).body("queue already exists")
+            response(StatusCode::Conflict, "queue already exists")
         }
     }
-    .build())
 }
 
-async fn delete_queue<QH: QueueHub>(req: Req<QH>) -> TResult<StatusCode> {
+async fn delete_queue<QH: QueueHub>(req: Req<QH>) -> Resp {
     use crate::queue::DeleteQueueResult::*;
 
     let queue_name = get_queue_name(&req)?;
@@ -228,9 +227,9 @@ async fn delete_queue<QH: QueueHub>(req: Req<QH>) -> TResult<StatusCode> {
     match res {
         Done => {
             broadcaster.delete_channel(&queue_name).await;
-            Ok(StatusCode::NoContent)
+            response(StatusCode::NoContent, "")
         }
-        QueueDoesNotExist => Ok(StatusCode::NotFound),
+        QueueDoesNotExist => queue_not_found(),
     }
 }
 
@@ -252,13 +251,13 @@ async fn add_consumer<QH: QueueHub>(req: Req<QH>) -> Resp {
         .queue_hub
         .add_consumer(&queue_name, consumer)
         .await?;
-    Ok(match res {
-        QueueDoesNotExist => Response::builder(StatusCode::NotFound),
-        ConsumerAlreadyAdded => Response::builder(StatusCode::Conflict)
-            .body("consumer already added"),
-        Done => Response::builder(StatusCode::Created),
+    match res {
+        QueueDoesNotExist => queue_not_found(),
+        ConsumerAlreadyAdded => {
+            response(StatusCode::Conflict, "consumer already added")
+        }
+        Done => response(StatusCode::Created, ""),
     }
-    .build())
 }
 
 async fn remove_consumer<QH: QueueHub>(req: Req<QH>) -> Resp {
@@ -274,16 +273,11 @@ async fn remove_consumer<QH: QueueHub>(req: Req<QH>) -> Resp {
         .queue_hub
         .remove_consumer(&queue_name, &consumer)
         .await?;
-    Ok(match res {
-        QueueDoesNotExist => {
-            Response::builder(StatusCode::NotFound).body("unknown queue")
-        }
-        UnknownConsumer => {
-            Response::builder(StatusCode::NotFound).body("unknown consumer")
-        }
-        Done => Response::builder(StatusCode::Ok),
+    match res {
+        QueueDoesNotExist => queue_not_found(),
+        UnknownConsumer => not_found("unknown consumer"),
+        Done => response(StatusCode::Ok, ""),
     }
-    .build())
 }
 
 #[derive(Serialize)]
@@ -306,7 +300,7 @@ async fn queue_consumers<QH: QueueHub>(req: Req<QH>) -> Resp {
 
     let queue_name = get_queue_name(&req)?;
     match req.state().queue_hub.consumers(&queue_name).await? {
-        QueueDoesNotExist => not_found(),
+        QueueDoesNotExist => queue_not_found(),
         Consumers(consumers) => {
             json_response(GetConsumersResponse { consumers })
         }
@@ -368,8 +362,22 @@ fn get_queue_name<S>(req: &Request<S>) -> TResult<QueueName> {
         .map(QueueName::new)
 }
 
-fn not_found() -> Resp {
-    Ok(Response::new(StatusCode::NotFound))
+fn response<T>(code: StatusCode, body: T) -> Resp
+where
+    T: Into<Body>,
+{
+    Ok(Response::builder(code).body(body).build())
+}
+
+fn not_found<T>(body: T) -> Resp
+where
+    T: Into<Body>,
+{
+    response(StatusCode::NotFound, body)
+}
+
+fn queue_not_found() -> Resp {
+    not_found("queue doesn't exist")
 }
 
 fn json_response<T>(json: T) -> Resp

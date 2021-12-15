@@ -1,15 +1,16 @@
 use async_std::{
     fs::{self, File, OpenOptions},
     io::{
-        prelude::SeekExt, BufReader, BufWriter, Error, ErrorKind, ReadExt,
-        Result, SeekFrom, WriteExt,
+        prelude::*, BufReader, BufWriter, Error, ErrorKind, Result, SeekFrom,
     },
     path::{Path, PathBuf},
     stream::StreamExt,
     sync::{Arc, Mutex, RwLock},
 };
+use file_lock::FileLock;
+use simple_pool::ResourcePool;
 use std::{
-    collections::{hash_map::Entry, BTreeMap, HashMap},
+    collections::{btree_map::Entry, BTreeMap},
     convert::{TryFrom, TryInto},
     fmt,
     result::Result as StdResult,
@@ -52,6 +53,7 @@ impl From<Location> for String {
     }
 }
 
+#[derive(Debug)]
 pub struct InvalidLocationString;
 
 impl fmt::Display for InvalidLocationString {
@@ -82,36 +84,42 @@ impl TryFrom<&str> for Location {
     }
 }
 
+struct IndexDataFiles {
+    index: File,
+    data: File,
+}
+
 struct WriteSegment {
     idx: SegmentIdx,
     next_message_idx: MessageIdx,
     data_offset: u64,
-    index_file: File,
-    data_file: File,
+    files: IndexDataFiles,
 }
 
-//TODO: a pool of open files for each read segment
 struct ReadSegment {
-    message_quantity: usize,
-    index_file: File,
-    data_file: File,
+    message_quantity: RwLock<usize>,
+    files_pool: ResourcePool<IndexDataFiles>,
 }
 
-type ReadSegments = BTreeMap<SegmentIdx, Mutex<ReadSegment>>;
+type ReadSegments = BTreeMap<SegmentIdx, ReadSegment>;
+
+type Consumers = BTreeMap<Consumer, RwLock<Location>>;
 
 struct Queue {
     directory: PathBuf,
-    consumers: RwLock<HashMap<Consumer, RwLock<Location>>>,
+    consumers: RwLock<Consumers>,
     write_segment: Mutex<WriteSegment>,
     read_segments: RwLock<ReadSegments>,
 }
 
-type Queues = RwLock<HashMap<QueueName, Queue>>;
+type Queues = RwLock<BTreeMap<QueueName, Queue>>;
 
 #[derive(Clone)]
 pub struct AofQueueHub {
     directory: Arc<PathBuf>,
+    lock_file: Arc<FileLock>,
     bytes_per_segment: u64,
+    file_pool_size: usize,
     queues: Arc<Queues>,
 }
 
@@ -121,26 +129,55 @@ impl AofQueueHub {
     pub async fn load(
         directory: PathBuf,
         bytes_per_segment: u64,
+        file_pool_size: usize,
     ) -> Result<Self> {
-        //TODO: directory locking
+        let mut lock_path = directory.clone();
+        lock_path.push("lock");
+        let lock_file =
+            FileLock::lock(lock_path.to_str().unwrap(), false, true)?;
 
-        let mut queues = HashMap::new();
+        let mut queues = BTreeMap::new();
         let mut dir_entries = fs::read_dir(&directory).await?;
         while let Some(dir_entry) = dir_entries.next().await {
             let dir_entry = dir_entry?;
+            if !dir_entry.metadata().await?.is_dir() {
+                continue;
+            }
             let file_name =
                 dir_entry.file_name().into_string().expect("Must be UTF-8");
-            let queue = Self::load_queue(dir_entry.path().as_ref()).await?;
+            let queue =
+                Self::load_queue(dir_entry.path().as_ref(), file_pool_size)
+                    .await?;
             queues.insert(QueueName::new(file_name), queue);
         }
         Ok(Self {
             directory: Arc::new(directory),
+            lock_file: Arc::new(lock_file),
             bytes_per_segment,
+            file_pool_size,
             queues: Arc::new(RwLock::new(queues)),
         })
     }
 
-    async fn load_queue(queue_dir: &Path) -> Result<Queue> {
+    async fn load_queue(
+        queue_dir: &Path,
+        file_pool_size: usize,
+    ) -> Result<Queue> {
+        let mut consumers = BTreeMap::new();
+        let mut consumers_path = queue_dir.to_owned();
+        consumers_path.push("consumers");
+        if consumers_path.exists().await {
+            let reader = BufReader::new(File::open(consumers_path).await?);
+            let mut lines = reader.lines();
+            while let Some(Ok(line)) = lines.next().await {
+                if let Some((loc_str, consumer_str)) = line.split_once(' ') {
+                    let loc: Location = loc_str.try_into().unwrap();
+                    let consumer = Consumer::new(consumer_str.to_owned());
+                    consumers.insert(consumer, RwLock::new(loc));
+                }
+            }
+        }
+
         let mut read_segments = BTreeMap::new();
         let mut next_seg_idx = SegmentIdx(0);
         let mut dir_entries = fs::read_dir(queue_dir).await?;
@@ -158,9 +195,12 @@ impl AofQueueHub {
             };
             read_segments.insert(
                 segment_idx.clone(),
-                Mutex::new(
-                    Self::load_read_segment(queue_dir, &segment_idx).await?,
-                ),
+                Self::load_read_segment(
+                    queue_dir,
+                    &segment_idx,
+                    file_pool_size,
+                )
+                .await?,
             );
             if segment_idx > next_seg_idx {
                 next_seg_idx = segment_idx;
@@ -175,13 +215,12 @@ impl AofQueueHub {
         );
         read_segments.insert(
             next_seg_idx.clone(),
-            Mutex::new(
-                Self::load_read_segment(queue_dir, &next_seg_idx).await?,
-            ),
+            Self::load_read_segment(queue_dir, &next_seg_idx, file_pool_size)
+                .await?,
         );
         Ok(Queue {
             directory: queue_dir.to_owned(),
-            consumers: RwLock::new(HashMap::new()),
+            consumers: RwLock::new(consumers),
             write_segment,
             read_segments: RwLock::new(read_segments),
         })
@@ -199,7 +238,12 @@ impl AofQueueHub {
 
         queue.read_segments.write().await.insert(
             idx.clone(),
-            Mutex::new(Self::load_read_segment(&queue.directory, &idx).await?),
+            Self::load_read_segment(
+                &queue.directory,
+                &idx,
+                self.file_pool_size,
+            )
+            .await?,
         );
         Ok(())
     }
@@ -207,17 +251,23 @@ impl AofQueueHub {
     async fn load_read_segment(
         queue_dir: &Path,
         idx: &SegmentIdx,
+        file_pool_size: usize,
     ) -> Result<ReadSegment> {
+        let mut message_quantity = 0;
+        let files_pool = ResourcePool::new();
         let mut open_opts = OpenOptions::new();
         open_opts.create(false).write(false).read(true);
-        let (index_file, data_file) =
-            Self::index_data_files(queue_dir, idx, open_opts).await?;
-        let message_quantity =
-            (index_file.metadata().await?.len() / INDEX_ITEM_SIZE) as usize;
+        for _ in 0..file_pool_size {
+            let files =
+                Self::index_data_files(queue_dir, idx, &open_opts).await?;
+            let msg_quantity = (files.index.metadata().await?.len()
+                / INDEX_ITEM_SIZE) as usize;
+            message_quantity = message_quantity.max(msg_quantity);
+            files_pool.append(files);
+        }
         Ok(ReadSegment {
-            message_quantity,
-            index_file,
-            data_file,
+            message_quantity: RwLock::new(message_quantity),
+            files_pool,
         })
     }
 
@@ -227,26 +277,24 @@ impl AofQueueHub {
     ) -> Result<WriteSegment> {
         let mut open_opts = OpenOptions::new();
         open_opts.create(true).append(true).read(false);
-        let (index_file, data_file) =
-            Self::index_data_files(queue_dir, idx, open_opts).await?;
+        let files = Self::index_data_files(queue_dir, idx, &open_opts).await?;
         Ok(WriteSegment {
             idx: idx.clone(),
             next_message_idx: MessageIdx(0),
             data_offset: 0,
-            index_file,
-            data_file,
+            files,
         })
     }
 
     async fn index_data_files(
         queue_dir: &Path,
         idx: &SegmentIdx,
-        options: OpenOptions,
-    ) -> Result<(File, File)> {
+        options: &OpenOptions,
+    ) -> Result<IndexDataFiles> {
         let (index_path, data_path) = Self::index_data_paths(queue_dir, idx);
-        let index_file = options.open(index_path).await?;
-        let data_file = options.open(data_path).await?;
-        Ok((index_file, data_file))
+        let index = options.open(index_path).await?;
+        let data = options.open(data_path).await?;
+        Ok(IndexDataFiles { index, data })
     }
 
     fn index_data_paths(
@@ -276,10 +324,9 @@ impl AofQueueHub {
             if *segment_idx != start_location.segment_idx {
                 start_msg_idx = &segment_beginning
             }
-            let mut segment = segment.lock().await;
             let messages = Self::read_messages_from_segment(
                 segment_idx,
-                &mut segment,
+                &segment,
                 start_msg_idx,
                 number,
             )
@@ -292,13 +339,13 @@ impl AofQueueHub {
 
     async fn read_messages_from_segment(
         segment_idx: &SegmentIdx,
-        segment: &mut ReadSegment,
+        segment: &ReadSegment,
         start_message_idx: &MessageIdx,
         mut number: usize,
     ) -> Result<Messages<Self>> {
         let is_segment_beginning = start_message_idx.0 == 0;
         let mut start_idx_offset = start_message_idx.0 * INDEX_ITEM_SIZE;
-        number = number.min(segment.message_quantity);
+        number = number.min(*segment.message_quantity.read().await);
         let idx_item_size = INDEX_ITEM_SIZE as usize;
         //the last offset before the requested range is needed to determine
         //the offset and length of the first message in the range
@@ -310,9 +357,9 @@ impl AofQueueHub {
             start_idx_offset -= INDEX_ITEM_SIZE;
             &mut index_bytes[..]
         };
-        let index_file = &mut segment.index_file;
-        index_file.seek(SeekFrom::Start(start_idx_offset)).await?;
-        let mut read_bytes = index_file.read(index_buf).await?;
+        let files = &mut segment.files_pool.get().await;
+        files.index.seek(SeekFrom::Start(start_idx_offset)).await?;
+        let mut read_bytes = files.index.read(index_buf).await?;
         if is_segment_beginning {
             read_bytes += idx_item_size;
         };
@@ -320,10 +367,9 @@ impl AofQueueHub {
             .chunks_exact(idx_item_size)
             .map(|bs| u64::from_be_bytes(bs.try_into().unwrap()));
 
-        let data_file = &mut segment.data_file;
         let mut data_offset = offsets.next().unwrap_or(0);
-        data_file.seek(SeekFrom::Start(data_offset)).await?;
-        let mut data_reader = BufReader::new(data_file);
+        files.data.seek(SeekFrom::Start(data_offset)).await?;
+        let mut data_reader = BufReader::new(&files.data);
         let mut batch = Vec::with_capacity(number);
         let mut message_idx = start_message_idx.clone();
         for payload_offset in offsets {
@@ -359,20 +405,41 @@ impl AofQueueHub {
             return (to.message_idx.0 - from.message_idx.0) as usize;
         }
         for (segment_idx, segment) in segments {
-            let msg_quantity = segment.lock().await.message_quantity;
             if segment_idx == &from.segment_idx {
-                let msg_quantity = segment.lock().await.message_quantity;
+                let msg_quantity = *segment.message_quantity.read().await;
                 let from_msg_quantity = from.message_idx.0 as usize;
                 distance += msg_quantity - from_msg_quantity;
             } else if segment_idx == &to.segment_idx {
                 let to_msg_quantity = to.message_idx.0 as usize;
                 distance += to_msg_quantity;
             } else {
-                let msg_quantity = segment.lock().await.message_quantity;
+                let msg_quantity = *segment.message_quantity.read().await;
                 distance += msg_quantity;
             };
         }
         distance
+    }
+
+    async fn save_consumers(queue: &Queue) -> Result<()> {
+        let mut tmp_consumers_path = queue.directory.to_owned();
+        tmp_consumers_path.push("consumers.tmp");
+        let mut file = File::create(&tmp_consumers_path).await?;
+        let mut writer = BufWriter::new(&mut file);
+        for (consumer, loc) in queue.consumers.read().await.iter() {
+            let loc = loc.read().await;
+            let line = format!(
+                "{:020}.{:020} {}\n",
+                loc.segment_idx.0, loc.message_idx.0, consumer.0
+            );
+            writer.write_all(line.as_bytes()).await?;
+        }
+        writer.flush().await?;
+        file.sync_all().await?;
+
+        let mut consumers_path = queue.directory.to_owned();
+        consumers_path.push("consumers");
+        fs::rename(tmp_consumers_path, consumers_path).await?;
+        Ok(())
     }
 }
 
@@ -399,7 +466,9 @@ impl QueueHub for AofQueueHub {
             let mut queue_dir = self.directory.as_ref().clone();
             queue_dir.push(&queue_name.0);
             fs::create_dir(&queue_dir).await?;
-            let queue = Self::load_queue(queue_dir.as_ref()).await?;
+            let queue =
+                Self::load_queue(queue_dir.as_ref(), self.file_pool_size)
+                    .await?;
             qs.insert(queue_name, queue);
             Done
         })
@@ -430,7 +499,6 @@ impl QueueHub for AofQueueHub {
     ) -> Result<AddConsumerResult> {
         use AddConsumerResult::*;
 
-        //TODO: make consumer's state persistent
         Ok(if let Some(q) = self.queues.read().await.get(queue_name) {
             match q.consumers.write().await.entry(consumer) {
                 Entry::Occupied(_) => ConsumerAlreadyAdded,
@@ -482,7 +550,7 @@ impl QueueHub for AofQueueHub {
                 let mut data_offset = segment.data_offset;
 
                 {
-                    let mut data_file = &mut segment.data_file;
+                    let mut data_file = &mut segment.files.data;
                     let mut data_writer = BufWriter::new(&mut data_file);
                     for payload in batch {
                         let bs = payload.0.as_bytes();
@@ -499,7 +567,7 @@ impl QueueHub for AofQueueHub {
                     data_file.sync_all().await?;
                 }
 
-                let mut index_file = &mut segment.index_file;
+                let mut index_file = &mut segment.files.index;
                 let mut index_writer = BufWriter::new(&mut index_file);
                 for offset in offsets {
                     index_writer.write(&offset.to_be_bytes()).await?;
@@ -509,14 +577,14 @@ impl QueueHub for AofQueueHub {
 
                 segment.next_message_idx = next_msg_idx.clone();
                 segment.data_offset = data_offset;
-                q.read_segments
+                *q.read_segments
                     .read()
                     .await
                     .get(&segment_idx)
                     .unwrap()
-                    .lock()
-                    .await
-                    .message_quantity = next_msg_idx.0 as usize;
+                    .message_quantity
+                    .write()
+                    .await = next_msg_idx.0 as usize;
                 Done(locations)
             }
             None => QueueDoesNotExist,
@@ -572,7 +640,7 @@ impl QueueHub for AofQueueHub {
                         let read_segments = q.read_segments.read().await;
                         let message_quantity =
                             match read_segments.get(&position.segment_idx) {
-                                Some(s) => s.lock().await.message_quantity,
+                                Some(s) => *s.message_quantity.read().await,
                                 None => return Ok(PositionIsOutOfQueue),
                             } as u64;
                         if position.message_idx.0 >= message_quantity {
@@ -641,7 +709,7 @@ impl QueueHub for AofQueueHub {
                 min_sig_idx = min_sig_idx
                     .min(consumer_pos.read().await.segment_idx.clone());
             }
-            //TODO: save consumers here
+            Self::save_consumers(queue).await?;
             let write_segment = queue.write_segment.lock().await;
             let read_segments = &mut queue.read_segments.write().await;
             let garbage: Vec<_> = read_segments
@@ -682,7 +750,7 @@ impl QueueHub for AofQueueHub {
     async fn stats(&self, queue_name_prefix: &QueueName) -> Result<Stats> {
         let mut res = HashMap::new();
         let qs = self.queues.read().await;
-        for (queue_name, queue) in qs.iter() {
+        for (queue_name, queue) in qs.range(queue_name_prefix..) {
             if !queue_name.0.starts_with(&queue_name_prefix.0) {
                 continue;
             }
@@ -697,7 +765,7 @@ impl QueueHub for AofQueueHub {
             let last_loc = Location {
                 segment_idx: last_seg_idx.clone(),
                 message_idx: MessageIdx(
-                    last_seg.lock().await.message_quantity as u64,
+                    *last_seg.message_quantity.read().await as u64,
                 ),
             };
             let (first_seg_idx, _) = read_segments.iter().next().unwrap();

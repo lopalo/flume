@@ -100,7 +100,16 @@ fn is_valid_name(name: &str) -> bool {
 }
 
 #[derive(
-    PartialEq, Eq, Hash, Default, Clone, Debug, Serialize, Deserialize,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Default,
+    Clone,
+    Debug,
+    Serialize,
+    Deserialize,
 )]
 pub struct QueueName(String);
 
@@ -126,7 +135,9 @@ impl AsRef<[u8]> for QueueName {
     }
 }
 
-#[derive(PartialEq, Eq, Hash, Clone, Debug, Serialize, Deserialize)]
+#[derive(
+    PartialEq, Eq, PartialOrd, Ord, Hash, Clone, Debug, Serialize, Deserialize,
+)]
 pub struct Consumer(String);
 
 impl Consumer {

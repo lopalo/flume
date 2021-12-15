@@ -66,8 +66,12 @@ fn aof_qh(bytes_per_segment: u64) -> aof::AofQueueHub {
     data_path.push("flume_integration_test_aof");
     data_path.push(format!("data_{}", thread_rng().gen::<u128>()));
     fs::create_dir_all(&data_path).unwrap();
-    task::block_on(aof::AofQueueHub::load(data_path.into(), bytes_per_segment))
-        .unwrap()
+    task::block_on(aof::AofQueueHub::load(
+        data_path.into(),
+        bytes_per_segment,
+        2,
+    ))
+    .unwrap()
 }
 
 #[rstest]
@@ -169,7 +173,7 @@ async fn one_push_two_takes<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
 #[rstest]
 #[case::in_memory(in_memory_qh())]
 #[case::sqlite(sqlite_qh())]
-#[case::aof(aof_qh(1))]
+#[case::aof(aof_qh(3))]
 #[case::aof(aof_qh(100))]
 async fn read_and_commit<QH: QueueHub>(#[case] qh: QH) -> Result<()> {
     let pl = payload::<QH>;
